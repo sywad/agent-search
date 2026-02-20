@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Agent Search</h1>
+            <p class="subtitle">AI agent that searches, analyzes, and recommends products for you</p>
+        </header>
+
+        <div class="search-section">
+            <form id="searchForm" method="POST" action="/search">
+                <div class="search-box">
+                    <input type="text" id="query" name="query"
+                           placeholder="Tell me what you're looking for..."
+                           required>
+                    <button type="submit" id="searchBtn">Search</button>
+                    <button type="button" id="rerankBtn" onclick="rerankOnly()" disabled title="Run a search first to cache products">Rerank Only</button>
+                </div>
+                <div class="options">
+                    <label>
+                        Model:
+                        <select name="model" id="model-select">
+                            {% for key, info in models.items() %}
+                            <option value="{{ key }}" {% if key == 'gemini-2.5-flash' %}selected{% endif %}>{{ info.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>
+                        Max results per query:
+                        <input type="number" name="max_results" value="60" min="10" max="100">
+                    </label>
+                    <label>
+                        Top results to show:
+                        <input type="number" name="top_n" value="20" min="5" max="50">
+                    </label>
+                </div>
+                <div class="retailer-checkboxes">
+                    <span class="retailer-label">Retailers:</span>
+                    <label class="retailer-option retailer-amazon">
+                        <input type="checkbox" name="retailer_amazon" value="amazon" checked>
+                        <span class="retailer-badge source-amazon">Amazon</span>
+                    </label>
+                    <label class="retailer-option retailer-walmart">
+                        <input type="checkbox" name="retailer_walmart" value="walmart" checked>
+                        <span class="retailer-badge source-walmart">Walmart</span>
+                    </label>
+                    <label class="retailer-option retailer-target">
+                        <input type="checkbox" name="retailer_target" value="target" checked>
+                        <span class="retailer-badge source-target">Target</span>
+                    </label>
+                </div>
+                <div class="retailer-checkboxes">
+                    <span class="retailer-label">Research:</span>
+                    <label class="retailer-option">
+                        <span class="research-badge research-wirecutter">Wirecutter</span>
+                        <select id="toggle_wirecutter" class="toggle-select">
+                            <option value="auto" selected>Auto</option>
+                            <option value="1">On</option>
+                            <option value="0">Off</option>
+                        </select>
+                    </label>
+                    <label class="retailer-option">
+                        <span class="research-badge research-reddit">Reddit</span>
+                        <select id="toggle_reddit" class="toggle-select">
+                            <option value="auto" selected>Auto</option>
+                            <option value="1">On</option>
+                            <option value="0">Off</option>
+                        </select>
+                    </label>
+                    <label class="retailer-option">
+                        <span class="research-badge research-images">Images</span>
+                        <select id="toggle_images" class="toggle-select">
+                            <option value="auto" selected>Auto</option>
+                            <option value="1">On</option>
+                            <option value="0">Off</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="rerank-instructions">
+                    <label class="rerank-label" for="rerank_instructions">
+                        Reranker Instructions
+                        <button type="button" class="rerank-toggle-btn" onclick="toggleRerankInput()">Edit</button>
+                    </label>
+                    <textarea id="rerank_instructions" name="rerank_instructions" style="display: none;"
+                              rows="5"
+                              placeholder="Custom ranking instructions...">Rank the products based on:
+1. Query relevance — how well does this product match what the user is actually looking for? Consider the product's purpose, features, and category fit (most important)
+2. Visual match — does the product image confirm it is the right type of item for the query?
+3. Product quality — rating and reviews as secondary signals
+4. Retailer diversity — include the best products from EACH retailer/source
+
+Focus your reasoning on WHY each product is a good match for the user's specific query. Explain what features, attributes, or use-case alignment make it relevant. Do NOT just cite review counts or ratings — those are tiebreakers, not reasons.</textarea>
+                </div>
+            </form>
+        </div>
+
+        <div id="progress" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-step" id="step-qp">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Query Planning</span>
+                        <span class="step-status" id="step-qp-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-scraping">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Scraping Retailers</span>
+                        <span class="step-status" id="step-scraping-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-reranking">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Reranking</span>
+                        <span class="step-status" id="step-reranking-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-summarizing">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Summarizing</span>
+                        <span class="step-status" id="step-summarizing-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-wirecutter">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Wirecutter</span>
+                        <span class="step-status" id="step-wirecutter-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-reddit">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Reddit Research</span>
+                        <span class="step-status" id="step-reddit-status">waiting</span>
+                    </div>
+                </div>
+                <div class="progress-step" id="step-recommending">
+                    <div class="step-indicator"></div>
+                    <div class="step-info">
+                        <span class="step-name">Purchase Advisor</span>
+                        <span class="step-status" id="step-recommending-status">waiting</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('searchForm');
+        const progress = document.getElementById('progress');
+        const results = document.getElementById('results');
+        const searchBtn = document.getElementById('searchBtn');
+        const rerankBtn = document.getElementById('rerankBtn');
+
+        // Cache for rerank-only
+        let cachedProducts = null;
+        let cachedQuery = '';
+        let lastFullData = null;
+        let lastQuData = null;
+        let lastPlanData = null;
+
+        // Live elapsed timers
+        let activeTimer = null;
+        let timerStart = 0;
+        let timerElement = null;
+
+        function startTimer(statusEl) {
+            stopTimer();
+            timerStart = performance.now();
+            timerElement = statusEl;
+            activeTimer = setInterval(() => {
+                const elapsed = ((performance.now() - timerStart) / 1000).toFixed(1);
+                timerElement.textContent = `running... ${elapsed}s`;
+            }, 100);
+        }
+
+        function stopTimer() {
+            if (activeTimer) {
+                clearInterval(activeTimer);
+                activeTimer = null;
+            }
+        }
+
+        function setStep(stepId, status, detail) {
+            const el = document.getElementById('step-' + stepId);
+            const statusEl = document.getElementById('step-' + stepId + '-status');
+            el.className = 'progress-step ' + status;
+            if (status === 'running') {
+                statusEl.textContent = 'running...';
+                startTimer(statusEl);
+            } else if (status === 'done') {
+                stopTimer();
+                statusEl.textContent = detail || 'done';
+            } else {
+                statusEl.textContent = detail || status;
+            }
+        }
+
+        function resetProgress() {
+            stopTimer();
+            ['qp', 'scraping', 'reranking', 'summarizing', 'wirecutter', 'reddit', 'recommending'].forEach(id => {
+                const el = document.getElementById('step-' + id);
+                el.className = 'progress-step';
+                document.getElementById('step-' + id + '-status').textContent = 'waiting';
+            });
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Show progress, clear results
+            resetProgress();
+            progress.style.display = 'block';
+            results.innerHTML = '';
+            searchBtn.disabled = true;
+            searchBtn.textContent = 'Searching...';
+
+            const formData = new FormData(form);
+
+            // Collect selected retailers
+            const retailers = [];
+            document.querySelectorAll('.retailer-checkboxes input[type="checkbox"]:checked').forEach(cb => {
+                retailers.push(cb.value);
+            });
+            formData.set('retailers', retailers.join(','));
+
+            // Research toggles (auto/1/0)
+            formData.set('enable_wirecutter', document.getElementById('toggle_wirecutter').value);
+            formData.set('enable_reddit', document.getElementById('toggle_reddit').value);
+            formData.set('use_images', document.getElementById('toggle_images').value);
+
+            // Track whether user has manually edited rerank instructions
+            const rerankTextarea = document.getElementById('rerank_instructions');
+            const rerankEdited = rerankTextarea.style.display !== 'none' && rerankTextarea.value !== rerankTextarea.defaultValue;
+            formData.set('rerank_edited', rerankEdited ? '1' : '0');
+
+            // For auto mode, show/hide will be determined by planner response
+            // For explicit on/off, show/hide immediately
+            const wcVal = document.getElementById('toggle_wirecutter').value;
+            const rdVal = document.getElementById('toggle_reddit').value;
+            document.getElementById('step-wirecutter').style.display = wcVal === '0' ? 'none' : '';
+            document.getElementById('step-reddit').style.display = rdVal === '0' ? 'none' : '';
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep incomplete line
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                        const msg = JSON.parse(line.slice(6));
+                        console.log('SSE:', msg.step, msg.status);
+
+                        if (msg.step === 'query_planning' && msg.status === 'running') {
+                            setStep('qp', 'running');
+                        } else if (msg.step === 'query_planning' && msg.status === 'done') {
+                            setStep('qp', 'done', `${msg.time}s — ${msg.queries.length} queries`);
+                            lastPlanData = msg.plan || null;
+                            // Update wirecutter/reddit progress visibility based on effective decisions
+                            if (msg.plan && msg.plan.effective) {
+                                document.getElementById('step-wirecutter').style.display = msg.plan.effective.enable_wirecutter ? '' : 'none';
+                                document.getElementById('step-reddit').style.display = msg.plan.effective.enable_reddit ? '' : 'none';
+                            }
+                            if (msg.query_planning) {
+                                renderQueryPlanning(msg.query_planning, msg.plan);
+                            }
+                        } else if (msg.step === 'scraping' && msg.status === 'running') {
+                            setStep('scraping', 'running');
+                        } else if (msg.step === 'scraping' && msg.status === 'done') {
+                            setStep('scraping', 'done', `${msg.time}s — ${msg.product_count} products`);
+                        } else if (msg.step === 'scraping_data') {
+                            renderScrapingData(msg);
+                        } else if (msg.step === 'reranking' && msg.status === 'running') {
+                            setStep('reranking', 'running');
+                        } else if (msg.step === 'reranking' && msg.status === 'product') {
+                            appendProductCard(msg.product);
+                        } else if (msg.step === 'reranking' && msg.status === 'done') {
+                            setStep('reranking', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'complete') {
+                            stopTimer();
+                            renderFinalMetadata(msg.data);
+                        } else if (msg.step === 'summarizing' && msg.status === 'running') {
+                            setStep('summarizing', 'running');
+                        } else if (msg.step === 'summarizing' && msg.status === 'product') {
+                            insertSummary(msg.rank, msg.summary);
+                        } else if (msg.step === 'summarizing' && msg.status === 'done') {
+                            setStep('summarizing', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'running') {
+                            setStep('wirecutter', 'running');
+                        } else if (msg.step === 'wirecutter' && msg.status === 'global') {
+                            renderGlobalWirecutterPanel(msg.query, msg.articles);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'product') {
+                            insertWirecutterInsight(msg.rank, msg.search_term, msg.articles, msg.insight);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'done') {
+                            setStep('wirecutter', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'running') {
+                            setStep('reddit', 'running');
+                        } else if (msg.step === 'reddit_research' && msg.status === 'global') {
+                            renderGlobalRedditPanel(msg.query, msg.threads);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'product') {
+                            insertRedditInsight(msg.rank, msg.search_term, msg.threads, msg.insight);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'done') {
+                            setStep('reddit', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'recommending' && msg.status === 'running') {
+                            setStep('recommending', 'running');
+                        } else if (msg.step === 'recommending' && msg.status === 'product') {
+                            insertRecommendation(msg.rank, msg.recommended, msg.reason);
+                        } else if (msg.step === 'recommending' && msg.status === 'done') {
+                            setStep('recommending', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'error') {
+                            stopTimer();
+                            results.innerHTML = `<div class="error">${msg.message}</div>`;
+                        }
+                        } catch (e) { console.error('SSE handler error:', e, line); }
+                    }
+                }
+            } catch (error) {
+                stopTimer();
+                results.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            }
+
+            searchBtn.disabled = false;
+            searchBtn.textContent = 'Search';
+        });
+
+        function displayResults(data, rerankOnly = false) {
+            // Cache products from full search for rerank-only
+            if (!rerankOnly && data.per_query_results) {
+                cachedProducts = [];
+                for (const products of Object.values(data.per_query_results)) {
+                    cachedProducts.push(...products);
+                }
+                cachedQuery = data.query_planning?.input || document.getElementById('query').value;
+                lastFullData = data;
+                rerankBtn.disabled = false;
+                rerankBtn.title = `Rerank ${cachedProducts.length} cached products`;
+            }
+            // For rerank-only, merge with last full data
+            if (rerankOnly && lastFullData) {
+                data.query_planning = lastFullData.query_planning;
+                data.per_query_results = lastFullData.per_query_results;
+                data.generated_queries = lastFullData.generated_queries;
+                data.total_products = lastFullData.total_products;
+            }
+
+            let html = '';
+
+            // Show Query Planning Module
+            if (data.query_planning) {
+                html += '<div class="module-section">';
+                html += '<h2 class="module-title">Query Planner</h2>';
+                html += '<div class="module-content">';
+                html += `<div class="module-io">
+                    <div class="io-box">
+                        <div class="io-label">Input:</div>
+                        <div class="io-value">"${data.query_planning.input}"</div>
+                    </div>
+                    <div class="io-arrow">→</div>
+                    <div class="io-box">
+                        <div class="io-label">Search Queries (${data.query_planning.output.length}):</div>
+                        <ul class="queries-list">`;
+                data.query_planning.output.forEach((q, i) => {
+                    html += `<li><span class="query-num">${i + 1}.</span> "${q}"</li>`;
+                });
+                html += `</ul>
+                    </div>
+                </div>`;
+
+                if (data.query_planning.prompt) {
+                    html += '<div class="llm-details">';
+                    html += '<button class="toggle-btn" onclick="toggleLLM(\'qp\')">Show LLM Prompt & Response</button>';
+                    html += '<div id="llm-qp" class="llm-content" style="display: none;">';
+                    html += '<div class="llm-section">';
+                    html += '<h4>Prompt sent to LLM:</h4>';
+                    html += `<pre class="llm-text">${escapeHtml(data.query_planning.prompt)}</pre>`;
+                    html += '</div>';
+                    html += '<div class="llm-section">';
+                    html += '<h4>LLM Response:</h4>';
+                    html += `<pre class="llm-text">${escapeHtml(data.query_planning.llm_response)}</pre>`;
+                    html += '</div>';
+                    html += '</div></div>';
+                }
+
+                html += '</div></div>';
+            }
+
+            // Show timings and statistics
+            if (data.timings) {
+                const t = data.timings;
+                html += `<div class="timings-bar">
+                    ${data.model_used ? `<div class="timing-item timing-model"><span class="timing-label">Model</span><span class="timing-value timing-model-name">${data.model_used}</span></div><div class="timing-sep">|</div>` : ''}
+                    <div class="timing-item">
+                        <span class="timing-label">Query Planning</span>
+                        <span class="timing-value">${t.query_planning}s</span>
+                    </div>
+                    <div class="timing-sep">+</div>
+                    <div class="timing-item">
+                        <span class="timing-label">Scraping</span>
+                        <span class="timing-value">${t.scraping}s</span>
+                    </div>
+                    <div class="timing-sep">+</div>
+                    <div class="timing-item">
+                        <span class="timing-label">Reranking</span>
+                        <span class="timing-value">${t.reranking}s</span>
+                    </div>
+                    <div class="timing-sep">=</div>
+                    <div class="timing-item timing-total">
+                        <span class="timing-label">Total</span>
+                        <span class="timing-value">${t.total}s</span>
+                    </div>
+                </div>`;
+            }
+
+            html += `<div class="stats">
+                <span>📦 Total products scraped: ${data.total_products || 0}</span>
+                <span>✨ Reranked results: ${data.ranked_products ? data.ranked_products.length : 0}</span>
+            </div>`;
+
+            // Show ranked products
+            if (data.ranked_products && data.ranked_products.length > 0) {
+                html += '<div class="products-grid">';
+                data.ranked_products.forEach(product => {
+                    const source = product.source || 'amazon';
+                    const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+                    html += `
+                        <div class="product-card">
+                            <div class="rank-badge">#${product.rank}</div>
+                            <div class="source-badge source-${source}">${sourceLabel}</div>
+                            <div class="product-image">
+                                <img src="${product.image || 'https://via.placeholder.com/200'}"
+                                     alt="${product.title}"
+                                     onerror="this.src='https://via.placeholder.com/200'">
+                            </div>
+                            <div class="product-info">
+                                <h3 class="product-title">
+                                    <a href="${product.url}" target="_blank">${product.title}</a>
+                                </h3>
+                                <div class="product-meta">
+                                    <span class="price">${product.price}</span>
+                                    <span class="rating">⭐ ${product.rating}</span>
+                                    <span class="reviews">${product.reviews} reviews</span>
+                                </div>
+                                ${product.rank_reason ? `
+                                <div class="rank-reason">
+                                    <strong>💡 Why ranked here:</strong> ${product.rank_reason}
+                                </div>
+                                ` : ''}
+                                <div class="relevance">
+                                    Relevance: <span class="score">${product.relevance_score}%</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            } else {
+                html += '<div class="no-results">No products found</div>';
+            }
+
+            results.innerHTML = html;
+        }
+
+        // --- Progressive rendering functions ---
+
+        // Tracks streamed products count for the current search
+        let streamedProductCount = 0;
+        // Queue for staggering card animations
+        let cardQueue = [];
+        let cardTimerRunning = false;
+
+        function renderQueryPlanning(qpData, planData) {
+            console.log('renderQueryPlanning called', qpData, planData);
+            // Renders Query Planning module immediately when qp/done arrives
+            // Store for later use by renderFinalMetadata
+            lastQuData = qpData;
+
+            let html = '<div class="module-section">';
+            html += '<h2 class="module-title">Query Planner</h2>';
+            html += '<div class="module-content">';
+            html += `<div class="module-io">
+                <div class="io-box">
+                    <div class="io-label">Input:</div>
+                    <div class="io-value">"${escapeHtml(qpData.input)}"</div>
+                </div>
+                <div class="io-arrow">→</div>
+                <div class="io-box">
+                    <div class="io-label">Search Queries (${qpData.output.length}):</div>
+                    <ul class="queries-list">`;
+            qpData.output.forEach((q, i) => {
+                html += `<li><span class="query-num">${i + 1}.</span> "${escapeHtml(q)}"</li>`;
+            });
+            html += `</ul>
+                </div>
+            </div>`;
+
+            // Show planner decisions
+            if (planData) {
+                html += '<div class="planner-decisions">';
+                html += '<div class="planner-decisions-title">Planner Decisions:</div>';
+                html += '<div class="planner-decision-chips">';
+                html += `<span class="planner-chip ${planData.effective?.enable_wirecutter ? 'chip-on' : 'chip-off'}">Wirecutter: ${planData.effective?.enable_wirecutter ? 'On' : 'Off'}</span>`;
+                html += `<span class="planner-chip ${planData.effective?.enable_reddit ? 'chip-on' : 'chip-off'}">Reddit: ${planData.effective?.enable_reddit ? 'On' : 'Off'}</span>`;
+                html += `<span class="planner-chip ${planData.effective?.use_images ? 'chip-on' : 'chip-off'}">Images: ${planData.effective?.use_images ? 'On' : 'Off'}</span>`;
+                html += '</div>';
+                if (planData.rerank_instructions) {
+                    html += `<div class="planner-rerank-focus"><strong>Rerank Focus:</strong> ${escapeHtml(planData.rerank_instructions)}</div>`;
+                }
+                if (planData.reasoning) {
+                    html += `<div class="planner-reasoning"><strong>Reasoning:</strong> ${escapeHtml(planData.reasoning)}</div>`;
+                }
+                html += '</div>';
+            }
+
+            if (qpData.prompt) {
+                html += '<div class="llm-details">';
+                html += '<button class="toggle-btn" onclick="toggleLLM(\'qp\')">Show LLM Prompt & Response</button>';
+                html += '<div id="llm-qp" class="llm-content" style="display: none;">';
+                html += '<div class="llm-section">';
+                html += '<h4>Prompt sent to LLM:</h4>';
+                html += `<pre class="llm-text">${escapeHtml(qpData.prompt)}</pre>`;
+                html += '</div>';
+                html += '<div class="llm-section">';
+                html += '<h4>LLM Response:</h4>';
+                html += `<pre class="llm-text">${escapeHtml(qpData.llm_response)}</pre>`;
+                html += '</div>';
+                html += '</div></div>';
+            }
+
+            html += '</div></div>';
+
+            // Append placeholders for subsequent sections
+            html += '<div id="scraping-data-container"></div>';
+            html += '<div id="stats-bar-container"></div>';
+            html += '<div class="products-grid" id="products-grid"></div>';
+            html += '<div id="wirecutter-global-container"></div>';
+            html += '<div id="reddit-global-container"></div>';
+            html += '<div id="final-metadata"></div>';
+
+            results.innerHTML = html;
+        }
+
+        function renderScrapingData(data) {
+            // Renders per-query items (QU is already shown)
+            // Called when scraping_data event arrives
+
+            // Cache products for rerank-only
+            if (data.per_query_results) {
+                cachedProducts = [];
+                for (const products of Object.values(data.per_query_results)) {
+                    cachedProducts.push(...products);
+                }
+                cachedQuery = document.getElementById('query').value;
+                // Merge with existing QU data for lastFullData cache
+                lastFullData = Object.assign({}, data);
+                if (lastQuData) lastFullData.query_planning = lastQuData;
+                rerankBtn.disabled = false;
+                rerankBtn.title = `Rerank ${cachedProducts.length} cached products`;
+            }
+
+            // Insert into the scraping container (preserves QP above)
+            const container = document.getElementById('scraping-data-container');
+            if (container) {
+                container.innerHTML = '';
+            }
+
+            // Update stats bar
+            const statsContainer = document.getElementById('stats-bar-container');
+            if (statsContainer) {
+                statsContainer.innerHTML = `<div class="stats" id="stats-bar">
+                    <span>📦 Total products scraped: ${data.total_products || 0}</span>
+                    <span>✨ Reranked results: <span id="streamed-count">0</span></span>
+                </div>`;
+            }
+
+            streamedProductCount = 0;
+            cardQueue = [];
+            cardTimerRunning = false;
+        }
+
+        function appendProductCard(product) {
+            // Queue the product and process with stagger delay
+            // so cards animate in visibly one-by-one even if multiple arrive at once
+            cardQueue.push(product);
+            if (!cardTimerRunning) {
+                cardTimerRunning = true;
+                _processCardQueue();
+            }
+        }
+
+        function _processCardQueue() {
+            if (cardQueue.length === 0) {
+                cardTimerRunning = false;
+                return;
+            }
+            const product = cardQueue.shift();
+            _renderOneCard(product);
+            // 150ms stagger between cards for visible one-by-one effect
+            setTimeout(_processCardQueue, 150);
+        }
+
+        function _renderOneCard(product) {
+            const grid = document.getElementById('products-grid');
+            if (!grid) return;
+
+            const source = product.source || 'amazon';
+            const sourceLabel = source.charAt(0).toUpperCase() + source.slice(1);
+
+            const card = document.createElement('div');
+            card.className = 'product-card card-entrance';
+            card.id = `product-card-${product.rank}`;
+            card.innerHTML = `
+                <div class="rank-badge">#${product.rank}</div>
+                <div class="source-badge source-${source}">${sourceLabel}</div>
+                <div class="recommended-badge" id="rec-badge-${product.rank}" style="display: none;"></div>
+                <div class="product-image">
+                    <img src="${product.image || 'https://via.placeholder.com/200'}"
+                         alt="${escapeHtml(product.title)}"
+                         onerror="this.src='https://via.placeholder.com/200'">
+                </div>
+                <div class="product-info">
+                    <h3 class="product-title">
+                        <a href="${product.url}" target="_blank">${escapeHtml(product.title)}</a>
+                    </h3>
+                    <div class="product-meta">
+                        <span class="price">${product.price}</span>
+                        <span class="rating">⭐ ${product.rating}</span>
+                        <span class="reviews">${product.reviews} reviews</span>
+                    </div>
+                    ${product.rank_reason ? `
+                    <div class="rank-reason">
+                        <strong>💡 Why ranked here:</strong> ${product.rank_reason}
+                    </div>
+                    ` : ''}
+                    <div class="relevance">
+                        Relevance: <span class="score">${product.relevance_score}%</span>
+                    </div>
+                    <div class="product-summary" id="summary-${product.rank}">
+                        <div class="summary-loading"><span class="summary-spinner"></span> Loading summary...</div>
+                    </div>
+                    <div class="wirecutter-insights" id="wirecutter-${product.rank}"></div>
+                    <div class="reddit-insights" id="reddit-${product.rank}"></div>
+                    <div class="recommended-reason" id="rec-reason-${product.rank}"></div>
+                </div>
+            `;
+            grid.appendChild(card);
+
+            // Update streamed count
+            streamedProductCount++;
+            const countEl = document.getElementById('streamed-count');
+            if (countEl) countEl.textContent = streamedProductCount;
+        }
+
+        function insertSummary(rank, summaryText) {
+            const el = document.getElementById('summary-' + rank);
+            if (!el) return;
+            el.innerHTML = `<div class="summary-loaded">${escapeHtml(summaryText)}</div>`;
+        }
+
+        function renderFinalMetadata(data, rerankOnly = false) {
+            // Renders timings bar, debug panel, reranker module after streaming is complete
+            const container = document.getElementById('final-metadata');
+            if (!container) {
+                // Fallback: use displayResults for unexpected state
+                displayResults(data, rerankOnly);
+                return;
+            }
+
+            let html = '';
+
+            // Timings bar
+            if (data.timings) {
+                const t = data.timings;
+                html += `<div class="timings-bar">
+                    ${data.model_used ? `<div class="timing-item timing-model"><span class="timing-label">Model</span><span class="timing-value timing-model-name">${data.model_used}</span></div><div class="timing-sep">|</div>` : ''}`;
+                if (t.query_planning !== undefined) {
+                    html += `<div class="timing-item">
+                        <span class="timing-label">Query Planning</span>
+                        <span class="timing-value">${t.query_planning}s</span>
+                    </div>
+                    <div class="timing-sep">+</div>
+                    <div class="timing-item">
+                        <span class="timing-label">Scraping</span>
+                        <span class="timing-value">${t.scraping}s</span>
+                    </div>
+                    <div class="timing-sep">+</div>`;
+                }
+                html += `<div class="timing-item">
+                    <span class="timing-label">Reranking</span>
+                    <span class="timing-value">${t.reranking}s</span>
+                </div>
+                <div class="timing-sep">=</div>
+                <div class="timing-item timing-total">
+                    <span class="timing-label">Total</span>
+                    <span class="timing-value">${t.total}s</span>
+                </div>
+                </div>`;
+            }
+
+
+            container.innerHTML = html;
+
+            // Update the stats bar with final count
+            const countEl = document.getElementById('streamed-count');
+            if (countEl) countEl.textContent = streamedProductCount;
+        }
+
+        function toggleRerankInput() {
+            const textarea = document.getElementById('rerank_instructions');
+            const btn = document.querySelector('.rerank-toggle-btn');
+            if (textarea.style.display === 'none') {
+                textarea.style.display = 'block';
+                btn.textContent = 'Hide';
+            } else {
+                textarea.style.display = 'none';
+                btn.textContent = 'Edit';
+            }
+        }
+
+        function toggleLLM(type) {
+            const element = document.getElementById('llm-' + type);
+            if (element.style.display === 'none') {
+                element.style.display = 'block';
+            } else {
+                element.style.display = 'none';
+            }
+        }
+
+        function toggleQueryResults(id, headerElem) {
+            const element = document.getElementById(id);
+            const toggle = headerElem.querySelector('.per-query-toggle');
+            if (element.style.display === 'none') {
+                element.style.display = 'block';
+                toggle.innerHTML = '&#9650;';
+            } else {
+                element.style.display = 'none';
+                toggle.innerHTML = '&#9660;';
+            }
+        }
+
+        async function rerankOnly() {
+            if (!cachedProducts || cachedProducts.length === 0) {
+                alert('No cached products. Run a full search first.');
+                return;
+            }
+
+            const formData = new FormData(form);
+            const model = formData.get('model');
+            const top_n = formData.get('top_n');
+            const rerank_instructions = formData.get('rerank_instructions');
+
+            // Show progress (only reranking step)
+            resetProgress();
+            progress.style.display = 'block';
+            results.innerHTML = '';
+            rerankBtn.disabled = true;
+            rerankBtn.textContent = 'Reranking...';
+            searchBtn.disabled = true;
+
+            // Research toggles: resolve auto from last planner decisions
+            const wcSelect = document.getElementById('toggle_wirecutter').value;
+            const rdSelect = document.getElementById('toggle_reddit').value;
+            const imgSelect = document.getElementById('toggle_images').value;
+
+            let enableWirecutter, enableReddit, useImages;
+            if (wcSelect === 'auto') {
+                enableWirecutter = lastPlanData ? lastPlanData.effective.enable_wirecutter : false;
+            } else {
+                enableWirecutter = wcSelect === '1';
+            }
+            if (rdSelect === 'auto') {
+                enableReddit = lastPlanData ? lastPlanData.effective.enable_reddit : false;
+            } else {
+                enableReddit = rdSelect === '1';
+            }
+            if (imgSelect === 'auto') {
+                useImages = lastPlanData ? lastPlanData.effective.use_images : true;
+            } else {
+                useImages = imgSelect === '1';
+            }
+
+            // Skip QP and scraping steps visually
+            setStep('qp', 'done', 'cached');
+            setStep('scraping', 'done', `cached — ${cachedProducts.length} products`);
+
+            // Show/hide progress steps based on toggles
+            document.getElementById('step-wirecutter').style.display = enableWirecutter ? '' : 'none';
+            document.getElementById('step-reddit').style.display = enableReddit ? '' : 'none';
+
+            try {
+                const response = await fetch('/rerank', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        query: cachedQuery,
+                        products: cachedProducts,
+                        top_n: top_n,
+                        rerank_instructions: rerank_instructions,
+                        model: model,
+                        enable_wirecutter: enableWirecutter,
+                        enable_reddit: enableReddit,
+                        use_images: useImages
+                    })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                        const msg = JSON.parse(line.slice(6));
+
+                        if (msg.step === 'reranking' && msg.status === 'running') {
+                            setStep('reranking', 'running');
+                            // For rerank-only, re-render QP + scraping data from cache
+                            if (lastQuData) {
+                                renderQueryPlanning(lastQuData, lastPlanData);
+                            }
+                            if (lastFullData) {
+                                renderScrapingData({
+                                    per_query_results: lastFullData.per_query_results,
+                                    generated_queries: lastFullData.generated_queries,
+                                    total_products: lastFullData.total_products
+                                });
+                            }
+                        } else if (msg.step === 'reranking' && msg.status === 'product') {
+                            appendProductCard(msg.product);
+                        } else if (msg.step === 'reranking' && msg.status === 'done') {
+                            setStep('reranking', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'complete') {
+                            stopTimer();
+                            renderFinalMetadata(msg.data, true);
+                        } else if (msg.step === 'summarizing' && msg.status === 'running') {
+                            setStep('summarizing', 'running');
+                        } else if (msg.step === 'summarizing' && msg.status === 'product') {
+                            insertSummary(msg.rank, msg.summary);
+                        } else if (msg.step === 'summarizing' && msg.status === 'done') {
+                            setStep('summarizing', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'running') {
+                            setStep('wirecutter', 'running');
+                        } else if (msg.step === 'wirecutter' && msg.status === 'global') {
+                            renderGlobalWirecutterPanel(msg.query, msg.articles);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'product') {
+                            insertWirecutterInsight(msg.rank, msg.search_term, msg.articles, msg.insight);
+                        } else if (msg.step === 'wirecutter' && msg.status === 'done') {
+                            setStep('wirecutter', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'running') {
+                            setStep('reddit', 'running');
+                        } else if (msg.step === 'reddit_research' && msg.status === 'global') {
+                            renderGlobalRedditPanel(msg.query, msg.threads);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'product') {
+                            insertRedditInsight(msg.rank, msg.search_term, msg.threads, msg.insight);
+                        } else if (msg.step === 'reddit_research' && msg.status === 'done') {
+                            setStep('reddit', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'recommending' && msg.status === 'running') {
+                            setStep('recommending', 'running');
+                        } else if (msg.step === 'recommending' && msg.status === 'product') {
+                            insertRecommendation(msg.rank, msg.recommended, msg.reason);
+                        } else if (msg.step === 'recommending' && msg.status === 'done') {
+                            setStep('recommending', 'done', `${msg.time}s`);
+                        } else if (msg.step === 'error') {
+                            stopTimer();
+                            results.innerHTML = `<div class="error">${msg.message}</div>`;
+                        }
+                        } catch (e) { console.error('Rerank SSE handler error:', e, line); }
+                    }
+                }
+            } catch (error) {
+                stopTimer();
+                results.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            }
+
+            rerankBtn.disabled = false;
+            rerankBtn.textContent = 'Rerank Only';
+            searchBtn.disabled = false;
+        }
+
+        function renderGlobalRedditPanel(query, threads) {
+            const container = document.getElementById('reddit-global-container');
+            if (!container || !threads || threads.length === 0) return;
+
+            let html = '<div class="module-section reddit-global-panel">';
+            html += '<h2 class="module-title">Reddit Community Discussions</h2>';
+            html += '<div class="module-content">';
+            html += `<p class="reddit-global-query">Top Reddit threads for: <strong>"${escapeHtml(query)}"</strong></p>`;
+            html += '<div class="reddit-threads-list">';
+
+            threads.forEach(t => {
+                html += `<div class="reddit-thread-card">
+                    <div class="reddit-thread-score">${t.score}</div>
+                    <div class="reddit-thread-body">
+                        <div class="reddit-thread-title">
+                            <a href="${escapeHtml(t.permalink)}" target="_blank">${escapeHtml(t.title)}</a>
+                        </div>
+                        <div class="reddit-thread-meta">
+                            <span class="reddit-subreddit-badge">r/${escapeHtml(t.subreddit)}</span>
+                            <span class="reddit-comments">${t.num_comments} comments</span>
+                        </div>
+                        ${t.selftext_snippet ? `<p class="reddit-thread-snippet">${escapeHtml(t.selftext_snippet.substring(0, 200))}</p>` : ''}
+                    </div>
+                </div>`;
+            });
+
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        }
+
+        function insertRedditInsight(rank, searchTerm, threads, insight) {
+            const el = document.getElementById('reddit-' + rank);
+            if (!el) return;
+            if (!insight && (!threads || threads.length === 0)) return;
+
+            let html = '<div class="reddit-insight-loaded">';
+            html += `<div class="reddit-insight-header">
+                <span class="reddit-icon">Reddit Insights</span>
+                <span class="reddit-search-term">"${escapeHtml(searchTerm)}"</span>
+            </div>`;
+
+            if (insight) {
+                html += `<p class="reddit-insight-text">${escapeHtml(insight)}</p>`;
+            }
+
+            if (threads && threads.length > 0) {
+                html += '<div class="reddit-thread-links">';
+                threads.slice(0, 3).forEach(t => {
+                    html += `<a href="${escapeHtml(t.permalink)}" target="_blank" class="reddit-thread-link">
+                        <span class="reddit-link-sub">r/${escapeHtml(t.subreddit)}</span>
+                        <span class="reddit-link-title">${escapeHtml(t.title.substring(0, 80))}</span>
+                        <span class="reddit-link-stats">${t.score} pts &middot; ${t.num_comments} comments</span>
+                    </a>`;
+                });
+                html += '</div>';
+            }
+
+            html += '</div>';
+            el.innerHTML = html;
+        }
+
+        function renderGlobalWirecutterPanel(query, articles) {
+            const container = document.getElementById('wirecutter-global-container');
+            if (!container || !articles || articles.length === 0) return;
+
+            let html = '<div class="module-section wirecutter-global-panel">';
+            html += '<h2 class="module-title">Wirecutter Expert Reviews</h2>';
+            html += '<div class="module-content">';
+            html += `<p class="wirecutter-global-query">Relevant Wirecutter articles for: <strong>"${escapeHtml(query)}"</strong></p>`;
+            html += '<div class="wirecutter-articles-list">';
+
+            articles.forEach(a => {
+                html += `<div class="wirecutter-article-card">
+                    <div class="wirecutter-article-body">
+                        <div class="wirecutter-article-title">
+                            <a href="${escapeHtml(a.url)}" target="_blank">${escapeHtml(a.title)}</a>
+                        </div>
+                        ${a.snippet ? `<p class="wirecutter-article-snippet">${escapeHtml(a.snippet.substring(0, 200))}</p>` : ''}
+                        <div class="wirecutter-article-url">${escapeHtml(a.url)}</div>
+                    </div>
+                </div>`;
+            });
+
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        }
+
+        function insertWirecutterInsight(rank, searchTerm, articles, insight) {
+            const el = document.getElementById('wirecutter-' + rank);
+            if (!el) return;
+            if (!insight && (!articles || articles.length === 0)) return;
+
+            let html = '<div class="wirecutter-insight-loaded">';
+            html += `<div class="wirecutter-insight-header">
+                <span class="wirecutter-icon">Wirecutter</span>
+                <span class="wirecutter-search-term">"${escapeHtml(searchTerm)}"</span>
+            </div>`;
+
+            if (insight) {
+                html += `<p class="wirecutter-insight-text">${escapeHtml(insight)}</p>`;
+            }
+
+            if (articles && articles.length > 0) {
+                html += '<div class="wirecutter-article-links">';
+                articles.slice(0, 3).forEach(a => {
+                    html += `<a href="${escapeHtml(a.url)}" target="_blank" class="wirecutter-article-link">
+                        <span class="wirecutter-link-label">Wirecutter</span>
+                        <span class="wirecutter-link-title">${escapeHtml(a.title.substring(0, 80))}</span>
+                    </a>`;
+                });
+                html += '</div>';
+            }
+
+            html += '</div>';
+            el.innerHTML = html;
+        }
+
+        function insertRecommendation(rank, recommended, reason) {
+            if (!recommended) return;
+            // Show green badge
+            const badge = document.getElementById('rec-badge-' + rank);
+            if (badge) {
+                badge.textContent = 'Recommended';
+                badge.style.display = 'block';
+            }
+            // Show reason section
+            const reasonEl = document.getElementById('rec-reason-' + rank);
+            if (reasonEl && reason) {
+                reasonEl.innerHTML = `<div class="rec-reason-loaded"><strong>Recommended:</strong> ${escapeHtml(reason)}</div>`;
+            }
+            // Add green glow to card
+            const card = document.getElementById('product-card-' + rank);
+            if (card) {
+                card.classList.add('recommended-card');
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

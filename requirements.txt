@@ -1,0 +1,10 @@
+flask==3.0.0
+google-generativeai>=0.8.5
+openai>=1.0.0
+anthropic>=0.20.0
+beautifulsoup4==4.12.2
+requests==2.31.0
+python-dotenv==1.0.0
+lxml==4.9.3
+gunicorn==21.2.0
+gevent==24.2.1
