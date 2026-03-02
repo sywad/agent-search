@@ -1,12 +1,15 @@
 import time
 import json
+import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .llm_client import generate
 
-# Module-level timestamp for rate limiting Reddit API calls
+# Thread-safe rate limiter for Reddit API calls
+_reddit_lock = threading.Lock()
 _last_reddit_request = 0.0
-_MIN_SPACING = 2.0  # seconds between Reddit API requests
+_MIN_SPACING = 1.0  # seconds between Reddit API requests
 
 USER_AGENT = 'ProductSearchBot/1.0 (product research tool)'
 
@@ -19,16 +22,17 @@ SYSTEM_INSTRUCTION = (
 class RedditResearcher:
 
     def _rate_limited_get(self, url, params):
-        """GET request to Reddit with minimum 2s spacing between calls."""
+        """Thread-safe GET request to Reddit with minimum spacing between calls."""
         global _last_reddit_request
-        now = time.time()
-        wait = _MIN_SPACING - (now - _last_reddit_request)
-        if wait > 0:
-            time.sleep(wait)
+        with _reddit_lock:
+            now = time.time()
+            wait = _MIN_SPACING - (now - _last_reddit_request)
+            if wait > 0:
+                time.sleep(wait)
+            _last_reddit_request = time.time()
 
         headers = {'User-Agent': USER_AGENT}
         for attempt in range(2):
-            _last_reddit_request = time.time()
             try:
                 resp = requests.get(url, params=params, headers=headers, timeout=15)
                 if resp.status_code == 429:
@@ -36,6 +40,8 @@ class RedditResearcher:
                     if attempt == 0:
                         print(f"Reddit 429, retrying in {retry_after}s")
                         time.sleep(retry_after)
+                        with _reddit_lock:
+                            _last_reddit_request = time.time()
                         continue
                     return None
                 if resp.status_code != 200:
@@ -117,7 +123,7 @@ class RedditResearcher:
     def _synthesize_insight(self, product_title, search_term, threads, model):
         """LLM-synthesize community sentiment from Reddit thread titles and snippets."""
         if not threads:
-            return ''
+            return 'No relevant Reddit discussions found.'
 
         thread_text = ''
         for i, t in enumerate(threads[:5]):
@@ -139,7 +145,19 @@ class RedditResearcher:
             return insight_text.strip()
         except Exception as e:
             print(f"Reddit insight synthesis error: {e}")
-            return ''
+            return 'No relevant Reddit discussions found.'
+
+    def _research_one_product(self, product, search_terms, model):
+        """Research a single product: search Reddit + synthesize insight."""
+        rank = product.get('rank', 0)
+        title = product.get('title', '')
+        search_term = search_terms.get(rank, title.split()[:4])
+        if isinstance(search_term, list):
+            search_term = ' '.join(search_term)
+
+        threads = self._search_reddit(search_term, limit=5, sort='relevance', time_filter='year')
+        insight = self._synthesize_insight(title, search_term, threads, model)
+        return (rank, search_term, threads, insight)
 
     def research_products_stream(self, products, query, model):
         """
@@ -155,14 +173,18 @@ class RedditResearcher:
         global_threads = self._search_reddit(query, limit=8, sort='relevance', time_filter='year')
         yield ('_global', query, global_threads, None)
 
-        # Step 3: Per-product search + synthesis (sequential due to rate limits)
-        for product in products:
-            rank = product.get('rank', 0)
-            title = product.get('title', '')
-            search_term = search_terms.get(rank, title.split()[:4])
-            if isinstance(search_term, list):
-                search_term = ' '.join(search_term)
-
-            threads = self._search_reddit(search_term, limit=5, sort='relevance', time_filter='year')
-            insight = self._synthesize_insight(title, search_term, threads, model)
-            yield (rank, search_term, threads, insight)
+        # Step 3: Per-product research in parallel (rate limiter ensures spacing)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(self._research_one_product, p, search_terms, model): p
+                for p in products
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    yield result
+                except Exception as e:
+                    product = futures[future]
+                    rank = product.get('rank', 0)
+                    print(f"Reddit research error for rank {rank}: {e}")
+                    yield (rank, '', [], 'No relevant Reddit discussions found.')

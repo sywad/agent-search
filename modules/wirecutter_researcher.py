@@ -1,13 +1,16 @@
 import time
 import json
+import threading
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .llm_client import generate
 
-# Module-level timestamp for rate limiting requests
+# Thread-safe rate limiter for Wirecutter requests
+_wc_lock = threading.Lock()
 _last_wc_request = 0.0
-_MIN_SPACING = 2.0  # seconds between requests
+_MIN_SPACING = 1.0  # seconds between requests
 
 USER_AGENT = (
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -22,17 +25,22 @@ SYSTEM_INSTRUCTION = (
 
 class WirecutterResearcher:
 
+    def __init__(self):
+        # Cache scraped articles by URL to avoid duplicate fetches
+        self._article_cache = {}
+
     def _rate_limited_get(self, url, params=None):
-        """GET request with minimum 2s spacing between calls."""
+        """Thread-safe GET request with minimum spacing between calls."""
         global _last_wc_request
-        now = time.time()
-        wait = _MIN_SPACING - (now - _last_wc_request)
-        if wait > 0:
-            time.sleep(wait)
+        with _wc_lock:
+            now = time.time()
+            wait = _MIN_SPACING - (now - _last_wc_request)
+            if wait > 0:
+                time.sleep(wait)
+            _last_wc_request = time.time()
 
         headers = {'User-Agent': USER_AGENT}
         for attempt in range(2):
-            _last_wc_request = time.time()
             try:
                 resp = requests.get(url, params=params, headers=headers, timeout=15)
                 if resp.status_code == 429:
@@ -40,6 +48,8 @@ class WirecutterResearcher:
                     if attempt == 0:
                         print(f"Wirecutter 429, retrying in {retry_after}s")
                         time.sleep(retry_after)
+                        with _wc_lock:
+                            _last_wc_request = time.time()
                         continue
                     return None
                 if resp.status_code != 200:
@@ -96,13 +106,13 @@ class WirecutterResearcher:
         return results[:limit]
 
     def _scrape_article(self, url):
-        """Fetch a Wirecutter article and extract key content.
+        """Fetch a Wirecutter article and extract key content (with caching)."""
+        if url in self._article_cache:
+            return self._article_cache[url]
 
-        Prioritizes article structure (headings + first paragraph per section)
-        so the LLM sees all products mentioned, not just the first 2000 chars.
-        """
         resp = self._rate_limited_get(url)
         if not resp:
+            self._article_cache[url] = ''
             return ''
 
         try:
@@ -118,13 +128,10 @@ class WirecutterResearcher:
             if title_el:
                 title = title_el.get_text(strip=True)
 
-            # Extract structured content: headings + their following paragraphs
-            # This captures ALL product picks rather than just the first 2000 chars
             content_parts = []
             if title:
                 content_parts.append(f"Title: {title}")
 
-            # Gather all h2/h3 headings (contain pick categories and product names)
             headings = []
             for h in soup.select('h2, h3'):
                 text = h.get_text(strip=True)
@@ -133,7 +140,6 @@ class WirecutterResearcher:
             if headings:
                 content_parts.append("Sections: " + ' | '.join(headings))
 
-            # Walk through the article collecting heading+paragraph pairs
             seen_paras = 0
             for el in soup.select('h2, h3, article p, main p'):
                 tag = el.name
@@ -143,17 +149,19 @@ class WirecutterResearcher:
 
                 if tag in ('h2', 'h3'):
                     content_parts.append(f"\n## {text}")
-                    seen_paras = 0  # reset counter for new section
+                    seen_paras = 0
                 else:
-                    # Keep first 2 paragraphs per section for context
                     if seen_paras < 2:
                         content_parts.append(text)
                         seen_paras += 1
 
             full_text = '\n'.join(content_parts)
-            return full_text[:4000]
+            result = full_text[:4000]
+            self._article_cache[url] = result
+            return result
         except Exception as e:
             print(f"Wirecutter scrape error: {e}")
+            self._article_cache[url] = ''
             return ''
 
     def _extract_search_terms(self, products, model):
@@ -194,7 +202,7 @@ class WirecutterResearcher:
     def _synthesize_insight(self, product_title, search_term, article_texts, model):
         """LLM-synthesize expert review insights from Wirecutter article excerpts."""
         if not article_texts:
-            return ''
+            return 'No relevant Wirecutter results found.'
 
         excerpts = ''
         for i, text in enumerate(article_texts[:5]):
@@ -217,7 +225,28 @@ class WirecutterResearcher:
             return insight_text.strip()
         except Exception as e:
             print(f"Wirecutter insight synthesis error: {e}")
-            return ''
+            return 'No relevant Wirecutter results found.'
+
+    def _research_one_product(self, product, search_terms, global_context, model):
+        """Research a single product: search + scrape + synthesize."""
+        rank = product.get('rank', 0)
+        title = product.get('title', '')
+        search_term = search_terms.get(rank, title.split()[:4])
+        if isinstance(search_term, list):
+            search_term = ' '.join(search_term)
+
+        articles = self._search_wirecutter(search_term, limit=3)
+
+        # Scrape top 1-2 articles (uses cache so duplicates are free)
+        article_texts = []
+        for article in articles[:2]:
+            text = self._scrape_article(article['url'])
+            if text:
+                article_texts.append(text)
+        article_texts.extend(global_context)
+
+        insight = self._synthesize_insight(title, search_term, article_texts, model)
+        return (rank, search_term, articles, insight)
 
     def research_products_stream(self, products, query, model):
         """
@@ -240,24 +269,18 @@ class WirecutterResearcher:
             if text:
                 global_context.append(text)
 
-        # Step 4: Per-product search + scrape + synthesis
-        for product in products:
-            rank = product.get('rank', 0)
-            title = product.get('title', '')
-            search_term = search_terms.get(rank, title.split()[:4])
-            if isinstance(search_term, list):
-                search_term = ' '.join(search_term)
-
-            articles = self._search_wirecutter(search_term, limit=3)
-
-            # Scrape top 1-2 articles for this product (prioritized over global)
-            article_texts = []
-            for article in articles[:2]:
-                text = self._scrape_article(article['url'])
-                if text:
-                    article_texts.append(text)
-            # Append global context after product-specific articles
-            article_texts.extend(global_context)
-
-            insight = self._synthesize_insight(title, search_term, article_texts, model)
-            yield (rank, search_term, articles, insight)
+        # Step 4: Per-product research in parallel (rate limiter ensures spacing)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(self._research_one_product, p, search_terms, global_context, model): p
+                for p in products
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    yield result
+                except Exception as e:
+                    product = futures[future]
+                    rank = product.get('rank', 0)
+                    print(f"Wirecutter research error for rank {rank}: {e}")
+                    yield (rank, '', [], 'No relevant Wirecutter results found.')
