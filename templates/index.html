@@ -27,7 +27,7 @@
                         Model:
                         <select name="model" id="model-select">
                             {% for key, info in models.items() %}
-                            <option value="{{ key }}" {% if key == 'gemini-2.5-flash' %}selected{% endif %}>{{ info.label }}</option>
+                            <option value="{{ key }}" {% if key == 'gemini-3.1-flash-lite' %}selected{% endif %}>{{ info.label }}</option>
                             {% endfor %}
                         </select>
                     </label>

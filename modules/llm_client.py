@@ -4,6 +4,7 @@ import base64
 import json as _json
 
 MODELS = {
+    'gemini-3.1-flash-lite': {'provider': 'gemini', 'id': 'gemini-3.1-flash-lite-preview', 'label': 'Gemini 3.1 Flash Lite'},
     'gemini-2.5-flash': {'provider': 'gemini', 'id': 'gemini-2.5-flash', 'label': 'Gemini 2.5 Flash', 'thinking_budget': 0},
     'gemini-2.5-flash-thinking': {'provider': 'gemini', 'id': 'gemini-2.5-flash', 'label': 'Gemini 2.5 Flash (Thinking)', 'thinking_budget': 1024},
     'gemini-2.0-flash': {'provider': 'gemini', 'id': 'gemini-2.0-flash', 'label': 'Gemini 2.0 Flash'},

@@ -104,7 +104,7 @@ def search():
     top_n = int(request.form.get('top_n', 20))
     user_rerank_instructions = request.form.get('rerank_instructions', '').strip()
     rerank_edited = request.form.get('rerank_edited', '0') == '1'
-    model = request.form.get('model', 'gemini-2.5-flash')
+    model = request.form.get('model', 'gemini-3.1-flash-lite')
     retailers_raw = request.form.get('retailers', 'amazon').strip()
     selected_retailers = [r.strip() for r in retailers_raw.split(',') if r.strip()]
 
@@ -338,7 +338,7 @@ def rerank():
     products = data.get('products', [])
     top_n = int(data.get('top_n', 20))
     rerank_instructions = data.get('rerank_instructions', '').strip() or None
-    model = data.get('model', 'gemini-2.5-flash')
+    model = data.get('model', 'gemini-3.1-flash-lite')
     enable_wirecutter = bool(data.get('enable_wirecutter', False))
     enable_reddit = bool(data.get('enable_reddit', False))
     use_images = data.get('use_images', True)
