@@ -1,10 +1,8 @@
-"""Voice shopping agent — Milestone 1.
+"""Voice shopping agent server.
 
-FastAPI server that relays push-to-talk audio between the browser and a Gemini
-Live session. No product tools yet — this milestone proves the end-to-end voice
-loop: hold the mic button, speak, hear the model reply.
-
-Run from the repo root so the shared `modules/` package stays importable later:
+FastAPI server that relays tap-to-talk audio between the browser and a Gemini
+Live session, and runs the `search_products` tool (scrape + rank) on the model's
+behalf. Run from the repo root so the shared `modules/` package is importable:
 
     venv/bin/uvicorn voice_shopping.server:app --reload --port 5050
 """
@@ -19,6 +17,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
+
+try:
+    from websockets.exceptions import ConnectionClosed
+except Exception:  # pragma: no cover - websockets ships with uvicorn[standard]
+    class ConnectionClosed(Exception):
+        pass
+
+# Gemini Live closes idle/expired sessions with these — treat as a normal end of
+# session (client reconnects) rather than a crash.
+SESSION_END_ERRORS = (genai_errors.APIError, ConnectionClosed)
 
 from voice_shopping import agent
 
@@ -137,7 +146,12 @@ async def handle_tool_call(ws: WebSocket, session, tool_call):
         responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
 
     if responses:
-        await session.send_tool_response(function_responses=responses)
+        # The session or browser WS may have dropped during a slow search — don't
+        # let a late tool response crash anything.
+        try:
+            await session.send_tool_response(function_responses=responses)
+        except Exception as e:
+            print(f"tool response not delivered (session likely closed): {e}")
 
 
 @app.websocket("/ws")
@@ -168,12 +182,19 @@ async def ws_endpoint(ws: WebSocket):
                         elif event.get("type") == "end_turn":
                             await session.send_realtime_input(activity_end=types.ActivityEnd())
 
+            bg_tasks = set()
+
             async def gemini_to_browser():
                 """Forward Gemini audio, transcripts, and turn signals to the browser."""
                 while True:
                     async for response in session.receive():
                         if response.tool_call:
-                            await handle_tool_call(ws, session, response.tool_call)
+                            # Run the search concurrently so a slow scrape doesn't
+                            # stall the receive loop (which keeps audio flowing and
+                            # the session alive).
+                            t = asyncio.create_task(handle_tool_call(ws, session, response.tool_call))
+                            bg_tasks.add(t)
+                            t.add_done_callback(bg_tasks.discard)
                         sc = response.server_content
                         if response.data:
                             await ws.send_bytes(response.data)
@@ -196,11 +217,14 @@ async def ws_endpoint(ws: WebSocket):
                 t.cancel()
             for t in done:
                 exc = t.exception()
-                if exc and not isinstance(exc, WebSocketDisconnect):
+                if exc and not isinstance(exc, (WebSocketDisconnect,) + SESSION_END_ERRORS):
                     raise exc
 
     except WebSocketDisconnect:
         print("Client disconnected")
+    except SESSION_END_ERRORS as e:
+        # Idle/expired Gemini Live session — normal; the client reconnects.
+        print(f"Gemini Live session ended ({type(e).__name__}): {e}")
     except Exception as e:
         print(f"WS error: {e}")
         traceback.print_exc()
