@@ -28,12 +28,28 @@ let playCtx = null;
 let nextPlayTime = 0;
 
 function ensurePlayCtx() {
-  if (!playCtx) playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: OUTPUT_RATE });
+  // Don't force a sample rate — iOS Safari ignores/mishandles a requested rate and
+  // can produce a silent context. We declare 24 kHz on each buffer instead and let
+  // the graph resample to whatever the hardware context runs at.
+  if (!playCtx) playCtx = new (window.AudioContext || window.webkitAudioContext)();
   return playCtx;
+}
+
+// iOS unlock: a context starts "suspended" and only produces sound if resumed and
+// primed with a buffer during a user gesture. Safe no-op elsewhere.
+function unlockAudio() {
+  const ctx = ensurePlayCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const buf = ctx.createBuffer(1, 1, 22050);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.start(0);
 }
 
 function playPCM(arrayBuffer) {
   const ctx = ensurePlayCtx();
+  if (ctx.state === 'suspended') ctx.resume(); // iOS re-suspends aggressively
   const pcm = new Int16Array(arrayBuffer);
   const f32 = new Float32Array(pcm.length);
   for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 0x8000;
@@ -188,8 +204,8 @@ async function startRecording() {
   recording = true;
   speaking = false;
   els.mic.classList.remove('speaking');
-  await ensurePlayCtx().resume(); // unlock audio output on user gesture
-  stopPlayback();                 // barge-in: cut any current reply
+  unlockAudio();    // unlock/resume playback within this user gesture (iOS)
+  stopPlayback();   // barge-in: cut any current reply
 
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
@@ -242,5 +258,10 @@ els.mic.addEventListener('click', (e) => { e.preventDefault(); toggleRecording()
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && !e.repeat && !els.mic.disabled) { e.preventDefault(); toggleRecording(); }
 });
+
+// Prime/unlock audio on the very first user interaction (iOS needs a gesture).
+function primeAudioOnce() { unlockAudio(); }
+document.addEventListener('touchend', primeAudioOnce, { once: true });
+document.addEventListener('click', primeAudioOnce, { once: true });
 
 connect();
