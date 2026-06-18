@@ -26,11 +26,33 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 24px 20px 28px;
+  /* Bottom padding reserves room for the fixed control bar so cards aren't hidden. */
+  padding: 24px 20px 150px;
 }
 
 header h1 { margin: 0 0 4px; font-size: 1.5rem; }
 .tagline { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+/* How-to intro */
+.intro {
+  margin: 18px 0 0;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+.intro > strong { display: block; color: var(--text); margin-bottom: 8px; font-size: 0.92rem; }
+.intro ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+.intro li { line-height: 1.45; }
+.intro b { color: var(--text); font-weight: 600; }
+.intro em { color: var(--accent); font-style: normal; }
+.intro kbd {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 5px; font-size: 0.78em;
+}
+.intro-note { margin: 10px 0 0; font-size: 0.8rem; }
 
 .transcript {
   flex: 1;
@@ -144,6 +166,14 @@ header h1 { margin: 0 0 4px; font-size: 1.5rem; }
   border-radius: 6px;
   animation: pop 0.18s ease;
 }
+.card .detail-src {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
 .card.flash {
   animation: flash 1.4s ease;
 }
@@ -166,12 +196,22 @@ header h1 { margin: 0 0 4px; font-size: 1.5rem; }
 .card .store-walmart { background: #16243a; color: #4dabff; }
 .card .store-target { background: #2e1619; color: #ff5d73; }
 
+/* Fixed control bar — stays put no matter how long the conversation gets. */
 .controls {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, var(--bg) 55%, rgba(15, 17, 21, 0.85) 82%, transparent);
+  pointer-events: none; /* let taps pass through the faded area to cards behind */
 }
+.controls > * { pointer-events: auto; }
 
 .mic {
   width: 84px;

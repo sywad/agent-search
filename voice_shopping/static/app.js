@@ -120,6 +120,7 @@ function renderCards(query, cards) {
     const card = document.createElement('article');
     card.className = 'card';
     card.dataset.rank = c.rank;
+    card.dataset.store = c.store || 'product';
     const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
     card.innerHTML = `
       <div class="rank">#${escapeHtml(c.rank)}</div>
@@ -137,29 +138,32 @@ function cardByRank(rank) {
   return els.cards.querySelector(`.card[data-rank="${rank}"]`);
 }
 
-function showDetailLoading(rank) {
-  const card = cardByRank(rank);
-  if (!card) return;
+function ensureDetailEl(card) {
   let det = card.querySelector('.detail');
   if (!det) {
     det = document.createElement('div');
     det.className = 'detail';
     card.querySelector('.info').appendChild(det);
   }
-  det.textContent = 'Looking up details…';
+  return det;
+}
+
+function showDetailLoading(rank) {
+  const card = cardByRank(rank);
+  if (!card) return;
+  const store = card.dataset.store || 'product';
+  ensureDetailEl(card).innerHTML =
+    `<span class="detail-src">📄 Reading the ${escapeHtml(store)} product page…</span>`;
   card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function showDetail(rank, summary) {
   const card = cardByRank(rank);
   if (!card) return;
-  let det = card.querySelector('.detail');
-  if (!det) {
-    det = document.createElement('div');
-    det.className = 'detail';
-    card.querySelector('.info').appendChild(det);
-  }
-  det.textContent = summary;
+  const store = card.dataset.store || 'product';
+  // Attribute the summary to its source so it doesn't read as made-up.
+  ensureDetailEl(card).innerHTML =
+    `<span class="detail-src">📄 From the ${escapeHtml(store)} product page &amp; reviews</span>${escapeHtml(summary)}`;
 }
 
 function highlightCard(rank) {
