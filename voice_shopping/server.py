@@ -68,8 +68,12 @@ After results come back:
 Follow-ups (important):
 - If they want changes ("cheaper", "only Sony", "something smaller", "add Walmart"),
   call `search_products` again with the updated constraints.
-- They can ask about a specific pick by its number or store — answer from what you
-  already found, no need to search again."""
+- For a quick question about a pick, answer from what you already found.
+- For DEEPER detail ("tell me more about the second one", "does it have X", "which
+  of these is better for travel"), call `get_product_details` for that item (or for
+  each item you're comparing) to get real specs and review highlights, then summarize.
+- When you talk about a specific item, call `highlight_product` with its rank so its
+  card is highlighted on screen for the user to tap. Refer to items by rank/store."""
 
 BASE_DIR = Path(__file__).parent
 
@@ -118,16 +122,27 @@ async def health():
     return {"status": "ok", "model": MODEL}
 
 
-async def handle_tool_call(ws: WebSocket, session, tool_call):
+def _lookup(state, rank):
+    """Resolve a rank (int/float/str from the model) to a stored result card."""
+    results = state.get("results") or {}
+    try:
+        return results.get(int(rank))
+    except (TypeError, ValueError):
+        return None
+
+
+async def handle_tool_call(ws: WebSocket, session, tool_call, state):
     """Run each requested function and return its result to the Live session.
 
-    Product cards are pushed to the browser separately so the UI can render them
-    while the model composes its spoken summary from the compact result.
+    Product cards/details are pushed to the browser separately so the UI updates
+    while the model composes its spoken summary from the compact result. `state`
+    holds the last search's ranked cards so rank references (e.g. "the 2nd one")
+    can resolve to a real product.
     """
     responses = []
     for fc in tool_call.function_calls:
+        args = dict(fc.args or {})
         if fc.name == "search_products":
-            args = dict(fc.args or {})
             stores = [agent.RETAILER_LABELS[r] for r in agent._normalize_retailers(args.get("retailers"))]
             await ws.send_json({"type": "search_running", "query": args.get("query", ""), "stores": stores})
             try:
@@ -138,9 +153,40 @@ async def handle_tool_call(ws: WebSocket, session, tool_call):
                 compact, cards = {"error": str(e)}, []
             if cards:
                 await ws.send_json({"type": "products", "query": args.get("query", ""), "cards": cards})
+                state["query"] = args.get("query", "")
+                state["results"] = {c["rank"]: c for c in cards}
             else:
                 await ws.send_json({"type": "no_products", "query": args.get("query", "")})
             result = compact
+
+        elif fc.name == "get_product_details":
+            card = _lookup(state, args.get("rank"))
+            if not card:
+                result = {"error": "No matching product yet — search first, or restate which item."}
+            else:
+                await ws.send_json({"type": "detail_running", "rank": card["rank"]})
+                try:
+                    summary = await agent.fetch_details(card, state.get("query", ""))
+                except Exception as e:
+                    print(f"get_product_details error: {e}")
+                    summary = ""
+                if summary:
+                    await ws.send_json({"type": "product_detail", "rank": card["rank"], "summary": summary})
+                result = {
+                    "rank": card["rank"],
+                    "title": card.get("title", "")[:90],
+                    "details": summary or "Couldn't read the detail page; share the card info you have.",
+                    "instruction": "Relay these details to the user in a sentence or two, spoken naturally.",
+                }
+
+        elif fc.name == "highlight_product":
+            card = _lookup(state, args.get("rank"))
+            if card:
+                await ws.send_json({"type": "highlight_product", "rank": card["rank"]})
+                result = {"ok": True, "rank": card["rank"]}
+            else:
+                result = {"error": "No matching product to highlight."}
+
         else:
             result = {"error": f"unknown function {fc.name}"}
         responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
@@ -183,6 +229,7 @@ async def ws_endpoint(ws: WebSocket):
                             await session.send_realtime_input(activity_end=types.ActivityEnd())
 
             bg_tasks = set()
+            state = {"results": {}, "query": ""}  # last search's ranked cards, by rank
 
             async def gemini_to_browser():
                 """Forward Gemini audio, transcripts, and turn signals to the browser."""
@@ -192,7 +239,7 @@ async def ws_endpoint(ws: WebSocket):
                             # Run the search concurrently so a slow scrape doesn't
                             # stall the receive loop (which keeps audio flowing and
                             # the session alive).
-                            t = asyncio.create_task(handle_tool_call(ws, session, response.tool_call))
+                            t = asyncio.create_task(handle_tool_call(ws, session, response.tool_call, state))
                             bg_tasks.add(t)
                             t.add_done_callback(bg_tasks.discard)
                         sc = response.server_content

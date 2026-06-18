@@ -119,6 +119,7 @@ function renderCards(query, cards) {
       ? `★ ${escapeHtml(c.rating)} <span class="muted">(${escapeHtml(c.reviews || '0')})</span>` : '';
     const card = document.createElement('article');
     card.className = 'card';
+    card.dataset.rank = c.rank;
     const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
     card.innerHTML = `
       <div class="rank">#${escapeHtml(c.rank)}</div>
@@ -130,6 +131,44 @@ function renderCards(query, cards) {
       </div>`;
     els.cards.appendChild(card);
   }
+}
+
+function cardByRank(rank) {
+  return els.cards.querySelector(`.card[data-rank="${rank}"]`);
+}
+
+function showDetailLoading(rank) {
+  const card = cardByRank(rank);
+  if (!card) return;
+  let det = card.querySelector('.detail');
+  if (!det) {
+    det = document.createElement('div');
+    det.className = 'detail';
+    card.querySelector('.info').appendChild(det);
+  }
+  det.textContent = 'Looking up details…';
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function showDetail(rank, summary) {
+  const card = cardByRank(rank);
+  if (!card) return;
+  let det = card.querySelector('.detail');
+  if (!det) {
+    det = document.createElement('div');
+    det.className = 'detail';
+    card.querySelector('.info').appendChild(det);
+  }
+  det.textContent = summary;
+}
+
+function highlightCard(rank) {
+  const card = cardByRank(rank);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.remove('flash');
+  void card.offsetWidth; // restart the animation
+  card.classList.add('flash');
 }
 
 function showNoProducts(query) {
@@ -193,6 +232,9 @@ function connect() {
       }
       case 'products': renderCards(msg.query, msg.cards); break;
       case 'no_products': showNoProducts(msg.query); break;
+      case 'detail_running': showDetailLoading(msg.rank); break;
+      case 'product_detail': showDetail(msg.rank, msg.summary); break;
+      case 'highlight_product': highlightCard(msg.rank); break;
       case 'error': setStatus(`Error: ${msg.message}`, 'err'); setTimeout(setReady, 2500); break;
     }
   };

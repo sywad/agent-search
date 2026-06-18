@@ -19,6 +19,7 @@ from modules.walmart_scraper import WalmartScraper
 from modules.target_scraper import TargetScraper
 from modules.reranker import Reranker
 from modules.query_understanding import QueryPlanner
+from modules.detail_summarizer import DetailSummarizer
 
 # Text model for ranking + query expansion (the Live model id is audio-only and
 # not valid here).
@@ -80,8 +81,46 @@ SEARCH_PRODUCTS = types.FunctionDeclaration(
 )
 
 
+GET_PRODUCT_DETAILS = types.FunctionDeclaration(
+    name="get_product_details",
+    description=(
+        "Fetch deeper info from a product's detail page (specs, what's included, "
+        "standout review points, who it's best for) for ONE product from the most "
+        "recent search results. Use it when the user asks for more detail about a "
+        "specific item, or to compare two items closely (call it once per item)."
+    ),
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "rank": types.Schema(
+                type="INTEGER",
+                description="Rank number of the product from the last results (1 = top pick).",
+            ),
+        },
+        required=["rank"],
+    ),
+)
+
+HIGHLIGHT_PRODUCT = types.FunctionDeclaration(
+    name="highlight_product",
+    description=(
+        "Scroll to and visually highlight one product card on screen — use it when you "
+        "mention a specific item so the user can find and tap it to open it."
+    ),
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "rank": types.Schema(
+                type="INTEGER", description="Rank number of the product to highlight."
+            ),
+        },
+        required=["rank"],
+    ),
+)
+
+
 def tool() -> types.Tool:
-    return types.Tool(function_declarations=[SEARCH_PRODUCTS])
+    return types.Tool(function_declarations=[SEARCH_PRODUCTS, GET_PRODUCT_DETAILS, HIGHLIGHT_PRODUCT])
 
 
 def _parse_price(value) -> float | None:
@@ -260,3 +299,14 @@ async def run_search(args: dict) -> tuple[dict, list]:
     ]
 
     return compact, cards
+
+
+async def fetch_details(card: dict, query: str) -> str:
+    """Fetch + summarize one product's detail page. Returns a short, spoken-friendly
+    summary (empty string if the page couldn't be read)."""
+    summarizer = DetailSummarizer()
+    seed = query or card.get("title", "")
+    _, summary, _ = await asyncio.to_thread(
+        summarizer._fetch_and_summarize, card, seed, RERANK_MODEL
+    )
+    return summary or ""
