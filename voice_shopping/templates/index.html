@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Shopping Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>🛒 Voice Shopping Agent</h1>
+      <p class="tagline">Tap-to-talk shopping assistant · Milestone 1 (voice loop)</p>
+    </header>
+
+    <section id="transcript" class="transcript">
+      <div class="bubble agent">
+        <span class="who">Agent</span>
+        <span class="msg">Tap the mic button (or press the Space bar), tell me what you're shopping for, then tap again to send.</span>
+      </div>
+    </section>
+
+    <section id="results" class="results" hidden>
+      <h2 id="results-title" class="results-title"></h2>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <footer class="controls">
+      <button id="mic" class="mic" disabled aria-label="Tap to talk">
+        <svg viewBox="0 0 24 24" width="34" height="34" fill="currentColor" aria-hidden="true">
+          <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3z"/>
+          <path d="M17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+        </svg>
+      </button>
+      <div id="status" class="status wait">Connecting…</div>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

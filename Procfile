@@ -1,1 +1,1 @@
-web: gunicorn app:app --worker-class gevent --workers 2 --timeout 300 --bind 0.0.0.0:$PORT
+web: gunicorn voice_shopping.server:app -k uvicorn.workers.UvicornWorker --workers 2 --timeout 600 --bind 0.0.0.0:$PORT

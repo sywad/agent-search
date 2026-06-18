@@ -3,7 +3,9 @@ services:
     name: agent-search
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --worker-class gevent --workers 2 --timeout 300 --bind 0.0.0.0:$PORT
+    # Voice shopping agent (FastAPI/uvicorn, WebSockets). Run from repo root so the
+    # shared modules/ package is importable. UvicornWorker handles async + WS.
+    startCommand: gunicorn voice_shopping.server:app -k uvicorn.workers.UvicornWorker --workers 2 --timeout 600 --bind 0.0.0.0:$PORT
     envVars:
       - key: GEMINI_API_KEY
         sync: false  # must be set manually in Render dashboard
