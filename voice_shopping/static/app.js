@@ -119,6 +119,13 @@ function stopPlayback() {
   if (playCtx) nextPlayTime = playCtx.currentTime;
 }
 
+// True while the agent's audio is still scheduled/playing. We gate the mic on this
+// so it doesn't capture the agent's own voice (echo) and self-interrupt in
+// hands-free mode on a speaker.
+function isAgentPlaying() {
+  return !!playCtx && nextPlayTime > playCtx.currentTime + 0.05;
+}
+
 // --- Transcript UI -------------------------------------------------------
 let curUser = null;
 let curAgent = null;
@@ -371,7 +378,11 @@ async function startRecording() {
   const source = micCtx.createMediaStreamSource(micStream);
   workletNode = new AudioWorkletNode(micCtx, 'pcm-processor');
   workletNode.port.onmessage = (e) => {
-    if (recording && ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+    // Half-duplex: don't stream mic audio while the agent is talking, or it hears
+    // itself through the speaker and self-interrupts.
+    if (recording && !isAgentPlaying() && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(e.data);
+    }
   };
   source.connect(workletNode);
   // Worklet needs a sink in some browsers; route to a muted gain.
