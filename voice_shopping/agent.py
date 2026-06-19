@@ -217,8 +217,8 @@ def _search_sync(query, retailers, min_price, max_price, features) -> list:
     if not products:
         return []
 
-    # Show a few more when blending stores so each source can be represented.
-    top_n = 5 if len(retailers) == 1 else 8
+    # Show a fuller grid; even more when blending stores so each source shows.
+    top_n = 9 if len(retailers) == 1 else 12
     instructions = _build_instructions(min_price, max_price, features, multi_retailer=len(retailers) > 1)
     ranked, _, _, _ = Reranker().rerank_products(
         query, products, top_n=top_n, custom_instructions=instructions,

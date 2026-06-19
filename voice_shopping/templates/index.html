@@ -8,43 +8,64 @@
 </head>
 <body>
   <main class="app">
-    <header>
-      <h1>🛒 Voice Shopping Agent</h1>
-      <p class="tagline">Talk to shop — search, compare, and dig into products by voice.</p>
+    <header class="topbar">
+      <h1>🛒 Voice Shopping</h1>
+      <button id="help-toggle" class="help-toggle" aria-label="How to use">?</button>
     </header>
 
-    <section class="intro">
+    <section id="intro" class="intro" hidden>
       <strong>How to use</strong>
       <ol>
         <li><b>Tap the mic</b> (or press <kbd>Space</kbd>), say what you want — e.g. <em>“noise-cancelling headphones under $100”</em> — then tap again to send.</li>
         <li>I’ll <b>search and rank</b> the best picks and read you the top ones.</li>
-        <li>Ask <b>follow-ups</b>: <em>“tell me more about the second one,”</em> <em>“which is better for travel?”</em>, <em>“cheaper,”</em> or <em>“also check Walmart.”</em></li>
+        <li>Ask <b>follow-ups</b>: <em>“tell me more about the second one,”</em> <em>“cheaper,”</em> or <em>“also check Walmart.”</em></li>
       </ol>
-      <p class="intro-note">🔊 Make sure your volume is up (and on iPhone, the silent switch is off) to hear replies.</p>
+      <p class="intro-note">🔊 Turn volume up (on iPhone, silent switch off) to hear replies.</p>
     </section>
 
-    <section id="transcript" class="transcript">
-      <div class="bubble agent">
-        <span class="who">Agent</span>
-        <span class="msg">Hi! Tap the mic and tell me what you're shopping for.</span>
-      </div>
+    <!-- What the agent is doing -->
+    <section class="stage-rail" aria-label="Agent activity">
+      <div class="stage" data-stage="listen"><span class="ic">🎙️</span><span class="lbl">Listen</span></div>
+      <div class="stage" data-stage="think"><span class="ic">💭</span><span class="lbl">Think</span></div>
+      <div class="stage" data-stage="search"><span class="ic">🔎</span><span class="lbl">Search</span></div>
+      <div class="stage" data-stage="rank"><span class="ic">⚖️</span><span class="lbl">Rank</span></div>
+      <div class="stage" data-stage="speak"><span class="ic">🔊</span><span class="lbl">Speak</span></div>
     </section>
+    <div id="stage-detail" class="stage-detail">Connecting…</div>
 
+    <!-- Product hero -->
     <section id="results" class="results" hidden>
       <h2 id="results-title" class="results-title"></h2>
       <div id="cards" class="cards"></div>
     </section>
 
-    <footer class="controls">
+    <div id="empty" class="empty">
+      <div class="empty-emoji">🛍️</div>
+      <p>Tap the mic and tell me what you're shopping for.</p>
+    </div>
+  </main>
+
+  <!-- Fixed dock: small transcript + mic -->
+  <div class="dock">
+    <section id="transcript-wrap" class="transcript-wrap">
+      <button id="transcript-head" class="transcript-head" aria-expanded="false">
+        <span class="th-icon">💬</span>
+        <span id="transcript-latest" class="th-latest">Conversation</span>
+        <span class="chev">▾</span>
+      </button>
+      <div id="transcript" class="transcript"></div>
+    </section>
+
+    <div class="controls">
       <button id="mic" class="mic" disabled aria-label="Tap to talk">
-        <svg viewBox="0 0 24 24" width="34" height="34" fill="currentColor" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor" aria-hidden="true">
           <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3z"/>
           <path d="M17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
         </svg>
       </button>
       <div id="status" class="status wait">Connecting…</div>
-    </footer>
-  </main>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

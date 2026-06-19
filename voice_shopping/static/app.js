@@ -10,10 +10,41 @@ const els = {
   mic: document.getElementById('mic'),
   status: document.getElementById('status'),
   transcript: document.getElementById('transcript'),
+  transcriptWrap: document.getElementById('transcript-wrap'),
+  transcriptHead: document.getElementById('transcript-head'),
+  transcriptLatest: document.getElementById('transcript-latest'),
   results: document.getElementById('results'),
   resultsTitle: document.getElementById('results-title'),
   cards: document.getElementById('cards'),
+  stages: document.querySelectorAll('.stage'),
+  stageDetail: document.getElementById('stage-detail'),
+  empty: document.getElementById('empty'),
+  intro: document.getElementById('intro'),
+  helpToggle: document.getElementById('help-toggle'),
 };
+
+// --- Agent activity (stage rail) ----------------------------------------
+const STAGE_ORDER = ['listen', 'think', 'search', 'rank', 'speak'];
+
+function setStage(name) {
+  const active = STAGE_ORDER.indexOf(name);
+  els.stages.forEach((el) => {
+    const i = STAGE_ORDER.indexOf(el.dataset.stage);
+    el.classList.toggle('active', i === active);
+    el.classList.toggle('done', active >= 0 && i < active);
+  });
+}
+
+// One call to update the whole activity display: stage chip, big detail line,
+// and the small status under the mic.
+function setActivity(stage, text, cls) {
+  if (stage !== undefined) setStage(stage);
+  if (text !== undefined) {
+    els.stageDetail.textContent = text;
+    els.stageDetail.className = `stage-detail ${cls || ''}`;
+    setStatus(text, cls);
+  }
+}
 
 let ws = null;
 let micCtx = null;       // 16 kHz capture context
@@ -94,13 +125,16 @@ function appendTranscript(role, text) {
   let node = role === 'user' ? curUser : curAgent;
   if (!node) {
     node = document.createElement('div');
-    node.className = `bubble ${role}`;
-    node.innerHTML = `<span class="who">${role === 'user' ? 'You' : 'Agent'}</span><span class="msg"></span>`;
+    node.className = `line ${role}`;
+    node.innerHTML = `<span class="who">${role === 'user' ? 'You' : 'Agent'}:</span> <span class="msg"></span>`;
     els.transcript.appendChild(node);
     if (role === 'user') curUser = node; else curAgent = node;
   }
   node.querySelector('.msg').textContent += text;
   els.transcript.scrollTop = els.transcript.scrollHeight;
+  // Mirror the latest line into the collapsed dock header.
+  const who = role === 'user' ? 'You' : 'Agent';
+  els.transcriptLatest.textContent = `${who}: ${node.querySelector('.msg').textContent}`;
 }
 
 function endTurnUI() {
@@ -115,8 +149,11 @@ function escapeHtml(s) {
   ));
 }
 
+function hideEmpty() { if (els.empty) els.empty.hidden = true; }
+
 function showSearching(query, stores) {
   const where = stores && stores.length ? stores.join(' + ') : 'Amazon';
+  hideEmpty();
   els.results.hidden = false;
   els.resultsTitle.textContent = `Searching ${where} for “${query}”…`;
   els.cards.innerHTML = '<div class="searching">🔎 Finding and ranking products…</div>';
@@ -126,24 +163,28 @@ function showSearching(query, stores) {
 function renderCards(query, cards) {
   lastResults = { query, cards };
   persistResults();
+  hideEmpty();
   els.results.hidden = false;
-  els.resultsTitle.textContent = `Top picks for “${query}”`;
+  els.resultsTitle.textContent = `${cards.length} picks for “${query}”`;
   els.cards.innerHTML = '';
   for (const c of cards) {
     const price = c.price && c.price !== 'N/A' ? `$${escapeHtml(c.price)}` : 'Price n/a';
     const rating = c.rating && c.rating !== 'N/A'
-      ? `★ ${escapeHtml(c.rating)} <span class="muted">(${escapeHtml(c.reviews || '0')})</span>` : '';
+      ? `<span class="rating">★ ${escapeHtml(c.rating)} <span class="muted">(${escapeHtml(c.reviews || '0')})</span></span>` : '';
+    const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
     const card = document.createElement('article');
     card.className = 'card';
     card.dataset.rank = c.rank;
     card.dataset.store = c.store || 'product';
-    const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
     card.innerHTML = `
-      <div class="rank">#${escapeHtml(c.rank)}</div>
-      ${c.image ? `<img class="thumb" src="${escapeHtml(c.image)}" alt="" loading="lazy">` : '<div class="thumb"></div>'}
+      <div class="thumb-wrap">
+        ${c.image ? `<img class="thumb" src="${escapeHtml(c.image)}" alt="" loading="lazy">` : '<div class="thumb empty-thumb"></div>'}
+        <span class="rank">#${escapeHtml(c.rank)}</span>
+        ${store}
+      </div>
       <div class="info">
         <a class="title" href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.title)}</a>
-        <div class="meta"><span class="price">${price}</span>${rating ? `<span class="rating">${rating}</span>` : ''}${store}</div>
+        <div class="meta"><span class="price">${price}</span>${rating}</div>
         ${c.why ? `<div class="why">${escapeHtml(c.why)}</div>` : ''}
       </div>`;
     els.cards.appendChild(card);
@@ -192,6 +233,7 @@ function highlightCard(rank) {
 }
 
 function showNoProducts(query) {
+  hideEmpty();
   els.results.hidden = false;
   els.resultsTitle.textContent = `No results for “${query}”`;
   els.cards.innerHTML = '<div class="searching">Nothing came back — the store may have blocked the request. Ask me to try again or rephrase.</div>';
@@ -207,7 +249,7 @@ function setReady() {
   speaking = false;
   els.mic.disabled = false;
   els.mic.classList.remove('speaking');
-  setStatus(READY_TEXT, 'ok');
+  setActivity('', READY_TEXT, 'ok'); // '' clears the stage rail
 }
 
 // First sign of the agent's reply this turn (audio or text) -> "Speaking".
@@ -215,7 +257,7 @@ function markSpeaking() {
   if (speaking || recording) return;
   speaking = true;
   els.mic.classList.add('speaking');
-  setStatus('Speaking…', 'ok');
+  setActivity('speak', 'Speaking…', 'ok');
 }
 
 // --- WebSocket -----------------------------------------------------------
@@ -226,7 +268,7 @@ function connect() {
 
   ws.onopen = () => {
     reconnectAttempts = 0;
-    setStatus('Connecting to agent…', 'wait');
+    setActivity('', 'Connecting…');
     // First message: hand back our resume handle + last results so the session and
     // server state can be restored.
     ws.send(JSON.stringify({ type: 'init', resume_handle: resumeHandle, last_results: lastResults }));
@@ -236,7 +278,7 @@ function connect() {
     els.mic.classList.remove('live', 'speaking');
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000); // backoff, cap 10s
     reconnectAttempts++;
-    setStatus(`Disconnected — reconnecting in ${Math.round(delay / 1000)}s…`, 'err');
+    setActivity('', `Disconnected — reconnecting in ${Math.round(delay / 1000)}s…`, 'err');
     setTimeout(connect, delay);
   };
   ws.onerror = () => {};
@@ -253,16 +295,19 @@ function connect() {
       case 'turn_complete': endTurnUI(); setReady(); break;
       case 'search_running': {
         const where = msg.stores && msg.stores.length ? msg.stores.join(' + ') : 'Amazon';
-        setStatus(`Searching ${where}…`, 'wait');
+        setActivity('search', `Searching ${where}…`);
         showSearching(msg.query, msg.stores);
         break;
       }
-      case 'products': renderCards(msg.query, msg.cards); break;
-      case 'no_products': showNoProducts(msg.query); break;
-      case 'detail_running': showDetailLoading(msg.rank); break;
+      case 'products':
+        setActivity('rank', `Ranked ${msg.cards.length} picks`, 'ok');
+        renderCards(msg.query, msg.cards);
+        break;
+      case 'no_products': setActivity('rank', 'No matches found'); showNoProducts(msg.query); break;
+      case 'detail_running': setActivity(undefined, 'Reading product details…'); showDetailLoading(msg.rank); break;
       case 'product_detail': showDetail(msg.rank, msg.summary); break;
       case 'highlight_product': highlightCard(msg.rank); break;
-      case 'error': setStatus(`Error: ${msg.message}`, 'err'); setTimeout(setReady, 2500); break;
+      case 'error': setActivity(undefined, `Error: ${msg.message}`, 'err'); setTimeout(setReady, 2500); break;
     }
   };
 }
@@ -281,7 +326,7 @@ async function startRecording() {
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
     });
   } catch (e) {
-    setStatus('Mic permission denied', 'err');
+    setActivity(undefined, 'Mic permission denied', 'err');
     recording = false;
     return;
   }
@@ -301,14 +346,14 @@ async function startRecording() {
 
   ws.send(JSON.stringify({ type: 'start_turn' }));
   els.mic.classList.add('live');
-  setStatus('Listening… tap again to send', 'live');
+  setActivity('listen', 'Listening… tap again to send', 'live');
 }
 
 async function stopRecording() {
   if (!recording) return;
   recording = false;
   els.mic.classList.remove('live');
-  setStatus('Thinking…', 'wait');
+  setActivity('think', 'Thinking…');
 
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'end_turn' }));
   if (workletNode) { workletNode.disconnect(); workletNode = null; }
@@ -327,6 +372,16 @@ els.mic.addEventListener('click', (e) => { e.preventDefault(); toggleRecording()
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && !e.repeat && !els.mic.disabled) { e.preventDefault(); toggleRecording(); }
 });
+
+// Expand/collapse the small transcript window.
+els.transcriptHead.addEventListener('click', () => {
+  const open = els.transcriptWrap.classList.toggle('open');
+  els.transcriptHead.setAttribute('aria-expanded', String(open));
+  if (open) els.transcript.scrollTop = els.transcript.scrollHeight;
+});
+
+// Toggle the how-to intro.
+els.helpToggle.addEventListener('click', () => { els.intro.hidden = !els.intro.hidden; });
 
 // Prime/unlock audio on the very first user interaction (iOS needs a gesture).
 function primeAudioOnce() { unlockAudio(); }
