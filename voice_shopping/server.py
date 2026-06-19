@@ -62,6 +62,8 @@ Searching:
   features/preferences they mentioned.
 - Search Amazon by default. Only add Walmart or Target to `retailers` when the user
   asks to compare stores or names one. Don't ask which store unless they bring it up.
+- About 15 products are shown by default; pass `limit` (up to 30) when the user wants
+  more or fewer ("show me lots of options" → higher; "just the best few" → ~3-5).
 
 After results come back:
 - Briefly recommend the top one or two picks and why they fit — a sentence or two,

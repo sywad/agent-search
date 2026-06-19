@@ -26,9 +26,13 @@ from modules.detail_summarizer import DetailSummarizer
 RERANK_MODEL = "gemini-3.1-flash-lite"
 
 # Scrape breadth PER expanded query, tuned for voice latency, not exhaustiveness.
-SCRAPE_RESULTS = 24
+SCRAPE_RESULTS = 36
 # Cap on how many search strings we expand a request into.
 EXPAND_MAX = 3
+# How many ranked products to return, and the hard ceiling the orchestrator can ask for.
+DEFAULT_LIMIT_SINGLE = 15
+DEFAULT_LIMIT_MULTI = 20
+MAX_LIMIT = 30
 
 SCRAPER_MAP = {
     "amazon": AmazonScraper,
@@ -73,6 +77,13 @@ SEARCH_PRODUCTS = types.FunctionDeclaration(
                 description=(
                     "Specific features, brands, or use-case the user mentioned, e.g. "
                     "'wireless, for running, long battery life'."
+                ),
+            ),
+            "limit": types.Schema(
+                type="INTEGER",
+                description=(
+                    "How many products to show (1-30). Defaults to ~15. Use fewer for a "
+                    "focused recommendation, more when the user wants to browse a lot."
                 ),
             ),
         },
@@ -218,7 +229,17 @@ def _scrape_one(retailer: str, queries: list) -> list:
         return []
 
 
-def _search_sync(query, retailers, min_price, max_price, features) -> list:
+def _resolve_limit(limit, n_retailers) -> int:
+    default = DEFAULT_LIMIT_SINGLE if n_retailers == 1 else DEFAULT_LIMIT_MULTI
+    if limit is None:
+        return default
+    try:
+        return max(1, min(int(limit), MAX_LIMIT))
+    except (TypeError, ValueError):
+        return default
+
+
+def _search_sync(query, retailers, min_price, max_price, features, limit=None) -> list:
     """Blocking multi-retailer scrape + blended rerank. Runs in a worker thread."""
     queries = _expand_queries(query, features)
     print(f"search_products: '{query}' -> queries={queries} retailers={retailers}")
@@ -246,8 +267,7 @@ def _search_sync(query, retailers, min_price, max_price, features) -> list:
     if not products:
         return []
 
-    # Show a fuller grid; even more when blending stores so each source shows.
-    top_n = 9 if len(retailers) == 1 else 12
+    top_n = _resolve_limit(limit, len(retailers))
     instructions = _build_instructions(min_price, max_price, features, multi_retailer=len(retailers) > 1)
     ranked, _, _, _ = Reranker().rerank_products(
         query, products, top_n=top_n, custom_instructions=instructions,
@@ -266,11 +286,12 @@ async def run_search(args: dict) -> tuple[dict, list]:
     min_price = args.get("min_price")
     max_price = args.get("max_price")
     features = (args.get("features") or "").strip()
+    limit = args.get("limit")
 
     if not query:
         return {"error": "no query provided"}, []
 
-    ranked = await asyncio.to_thread(_search_sync, query, retailers, min_price, max_price, features)
+    ranked = await asyncio.to_thread(_search_sync, query, retailers, min_price, max_price, features, limit)
     store_labels = [RETAILER_LABELS[r] for r in retailers]
 
     if not ranked:
