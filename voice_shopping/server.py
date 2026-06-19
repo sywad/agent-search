@@ -94,14 +94,21 @@ def get_client() -> genai.Client:
     return _client
 
 
-def live_config() -> types.LiveConnectConfig:
-    """Audio-out config with manual (push-to-talk) turn control and transcripts."""
+def live_config(resume_handle: str = None) -> types.LiveConnectConfig:
+    """Audio-out config with manual (push-to-talk) turn control and transcripts.
+
+    `session_resumption` makes the session resumable: Gemini periodically hands us
+    a resumption handle, and reconnecting with it restores the conversation context
+    (so follow-ups survive an idle disconnect). `handle=None` starts a fresh
+    resumable session.
+    """
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         # Pin output language — Live otherwise sometimes drifts (e.g. to Spanish).
         speech_config=types.SpeechConfig(language_code="en-US"),
         tools=[agent.tool()],
         system_instruction=types.Content(parts=[types.Part(text=SYSTEM_PROMPT)]),
+        session_resumption=types.SessionResumptionConfig(handle=resume_handle),
         # Push-to-talk: we mark turn boundaries ourselves instead of letting the
         # server guess from silence.
         realtime_input_config=types.RealtimeInputConfig(
@@ -200,12 +207,36 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state):
             print(f"tool response not delivered (session likely closed): {e}")
 
 
+async def _read_init(ws):
+    """Wait for the client's first `init` message: an optional Gemini resume handle
+    plus the last search's cards (so server-side rank lookups survive a reconnect).
+    Returns (resume_handle, state). Tolerates a missing/late init."""
+    import json
+    resume_handle = None
+    state = {"results": {}, "query": ""}
+    try:
+        raw = await asyncio.wait_for(ws.receive_text(), timeout=5)
+        init = json.loads(raw)
+        if init.get("type") == "init":
+            resume_handle = init.get("resume_handle") or None
+            lr = init.get("last_results") or {}
+            cards = lr.get("cards") or []
+            if cards:
+                state["query"] = lr.get("query", "")
+                state["results"] = {c["rank"]: c for c in cards if "rank" in c}
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"init not received cleanly ({type(e).__name__}); starting fresh")
+    return resume_handle, state
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
+    resume_handle, state = await _read_init(ws)
     try:
-        async with get_client().aio.live.connect(model=MODEL, config=live_config()) as session:
-            await ws.send_json({"type": "ready", "model": MODEL})
+        async with get_client().aio.live.connect(model=MODEL, config=live_config(resume_handle)) as session:
+            await ws.send_json({"type": "ready", "model": MODEL, "resumed": bool(resume_handle),
+                                "restored": len(state["results"])})
 
             async def browser_to_gemini():
                 """Forward mic audio + push-to-talk control messages to Gemini."""
@@ -228,13 +259,18 @@ async def ws_endpoint(ws: WebSocket):
                         elif event.get("type") == "end_turn":
                             await session.send_realtime_input(activity_end=types.ActivityEnd())
 
-            bg_tasks = set()
-            state = {"results": {}, "query": ""}  # last search's ranked cards, by rank
+            bg_tasks = set()  # `state` is set above from the client's init message
 
             async def gemini_to_browser():
                 """Forward Gemini audio, transcripts, and turn signals to the browser."""
                 while True:
                     async for response in session.receive():
+                        if response.session_resumption_update:
+                            upd = response.session_resumption_update
+                            if upd.resumable and upd.new_handle:
+                                # Hand the latest resume handle to the client to replay
+                                # on reconnect.
+                                await ws.send_json({"type": "resume_handle", "handle": upd.new_handle})
                         if response.tool_call:
                             # Run the search concurrently so a slow scrape doesn't
                             # stall the receive loop (which keeps audio flowing and

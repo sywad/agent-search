@@ -23,6 +23,20 @@ let recording = false;
 let speaking = false;    // true once the agent starts replying this turn
 let reconnectAttempts = 0;
 
+// Persisted across reconnects so conversation context survives an idle drop:
+// `resumeHandle` resumes the Gemini Live session; `lastResults` is replayed so the
+// server can rebuild its rank->product map.
+let resumeHandle = sessionStorage.getItem('vs_resume_handle') || null;
+let lastResults = JSON.parse(sessionStorage.getItem('vs_last_results') || 'null');
+
+function setResumeHandle(h) {
+  resumeHandle = h;
+  try { sessionStorage.setItem('vs_resume_handle', h); } catch (e) {}
+}
+function persistResults() {
+  try { sessionStorage.setItem('vs_last_results', JSON.stringify(lastResults)); } catch (e) {}
+}
+
 // --- Playback (24 kHz) ---------------------------------------------------
 let playCtx = null;
 let nextPlayTime = 0;
@@ -110,6 +124,8 @@ function showSearching(query, stores) {
 }
 
 function renderCards(query, cards) {
+  lastResults = { query, cards };
+  persistResults();
   els.results.hidden = false;
   els.resultsTitle.textContent = `Top picks for “${query}”`;
   els.cards.innerHTML = '';
@@ -208,7 +224,13 @@ function connect() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
 
-  ws.onopen = () => { reconnectAttempts = 0; setStatus('Connecting to agent…', 'wait'); };
+  ws.onopen = () => {
+    reconnectAttempts = 0;
+    setStatus('Connecting to agent…', 'wait');
+    // First message: hand back our resume handle + last results so the session and
+    // server state can be restored.
+    ws.send(JSON.stringify({ type: 'init', resume_handle: resumeHandle, last_results: lastResults }));
+  };
   ws.onclose = () => {
     els.mic.disabled = true;
     els.mic.classList.remove('live', 'speaking');
@@ -224,6 +246,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'ready': setReady(); break;
+      case 'resume_handle': setResumeHandle(msg.handle); break;
       case 'user_transcript': appendTranscript('user', msg.text); break;
       case 'agent_transcript': markSpeaking(); appendTranscript('agent', msg.text); break;
       case 'interrupted': stopPlayback(); break;
@@ -309,5 +332,10 @@ document.addEventListener('keydown', (e) => {
 function primeAudioOnce() { unlockAudio(); }
 document.addEventListener('touchend', primeAudioOnce, { once: true });
 document.addEventListener('click', primeAudioOnce, { once: true });
+
+// Restore the last results visually on reload (the socket also re-seeds the server).
+if (lastResults && lastResults.cards && lastResults.cards.length) {
+  renderCards(lastResults.query, lastResults.cards);
+}
 
 connect();
