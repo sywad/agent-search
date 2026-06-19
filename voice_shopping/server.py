@@ -98,12 +98,12 @@ def get_client() -> genai.Client:
 
 
 def live_config(resume_handle: str = None) -> types.LiveConnectConfig:
-    """Audio-out config with manual (push-to-talk) turn control and transcripts.
+    """Audio-out config with hands-free turn detection and transcripts.
 
-    `session_resumption` makes the session resumable: Gemini periodically hands us
-    a resumption handle, and reconnecting with it restores the conversation context
-    (so follow-ups survive an idle disconnect). `handle=None` starts a fresh
-    resumable session.
+    Automatic VAD (the default — we no longer disable it) lets Gemini detect when
+    the user starts/stops talking and supports barge-in, so the client just streams
+    the mic continuously while the conversation is active. `session_resumption`
+    makes the session resumable so follow-ups survive an idle disconnect.
     """
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
@@ -112,11 +112,6 @@ def live_config(resume_handle: str = None) -> types.LiveConnectConfig:
         tools=[agent.tool()],
         system_instruction=types.Content(parts=[types.Part(text=SYSTEM_PROMPT)]),
         session_resumption=types.SessionResumptionConfig(handle=resume_handle),
-        # Push-to-talk: we mark turn boundaries ourselves instead of letting the
-        # server guess from silence.
-        realtime_input_config=types.RealtimeInputConfig(
-            automatic_activity_detection=types.AutomaticActivityDetection(disabled=True),
-        ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
@@ -279,13 +274,9 @@ async def ws_endpoint(ws: WebSocket):
                                 mime_type=f"audio/pcm;rate={INPUT_SAMPLE_RATE}",
                             )
                         )
-                    elif msg.get("text") is not None:
-                        import json
-                        event = json.loads(msg["text"])
-                        if event.get("type") == "start_turn":
-                            await session.send_realtime_input(activity_start=types.ActivityStart())
-                        elif event.get("type") == "end_turn":
-                            await session.send_realtime_input(activity_end=types.ActivityEnd())
+                    # Hands-free: automatic VAD detects turns, so no per-turn control
+                    # messages are expected here (the one-time `init` is read before
+                    # this loop starts). Any stray text is ignored.
 
             bg_tasks = set()  # `state` is set above from the client's init message
 

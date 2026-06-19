@@ -1,7 +1,8 @@
 // Voice shopping agent — client.
-// Tap-to-talk: tap the button (or press Space) to start a turn, speak, tap again
-// to send. Plays back Gemini's 24 kHz PCM reply, shows running transcripts and
-// ranked product cards, and reflects the agent's state in the status line.
+// Hands-free: tap the mic (or press Space) once to start a conversation; the mic
+// streams continuously and Gemini's automatic VAD detects turns (you can talk over
+// it). Tap again to mute/end. Plays back Gemini's 24 kHz PCM reply and shows
+// transcripts, ranked product cards, and a stage rail of what the agent is doing.
 
 const INPUT_RATE = 16000;
 const OUTPUT_RATE = 24000;
@@ -245,19 +246,25 @@ function setStatus(text, cls) {
   els.status.className = `status ${cls || ''}`;
 }
 
-const READY_TEXT = 'Ready — tap to talk';
+const READY_TEXT = 'Tap the mic to start a conversation';
 function setReady() {
   speaking = false;
   els.mic.disabled = false;
-  els.mic.classList.remove('speaking');
+  els.mic.classList.remove('speaking', 'live');
   setActivity('', READY_TEXT, 'ok'); // '' clears the stage rail
 }
 
+// Back to listening between turns while the conversation stays active.
+function setListening() {
+  speaking = false;
+  setActivity('listen', 'Listening… tap to mute', 'live');
+}
+
 // First sign of the agent's reply this turn (audio or text) -> "Speaking".
+// In hands-free the mic stays open (for barge-in); only the stage rail changes.
 function markSpeaking() {
-  if (speaking || recording) return;
+  if (speaking) return;
   speaking = true;
-  els.mic.classList.add('speaking');
   setActivity('speak', 'Speaking…', 'ok');
 }
 
@@ -288,12 +295,21 @@ function connect() {
     if (ev.data instanceof ArrayBuffer) { playPCM(ev.data); return; }
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
-      case 'ready': setReady(); break;
+      case 'ready': recording ? setListening() : setReady(); break;
       case 'resume_handle': setResumeHandle(msg.handle); break;
-      case 'user_transcript': appendTranscript('user', msg.text); break;
+      case 'user_transcript':
+        if (recording && !msg.text.trim()) break;
+        speaking = false;
+        if (recording) setListening();
+        appendTranscript('user', msg.text);
+        break;
       case 'agent_transcript': markSpeaking(); appendTranscript('agent', msg.text); break;
-      case 'interrupted': stopPlayback(); break;
-      case 'turn_complete': endTurnUI(); setReady(); break;
+      case 'interrupted': stopPlayback(); speaking = false; break;
+      case 'turn_complete':
+        endTurnUI();
+        speaking = false;
+        if (recording) setListening(); else setReady();
+        break;
       case 'search_running': {
         const where = msg.stores && msg.stores.length ? msg.stores.join(' + ') : 'Amazon';
         setActivity('search', `Searching ${where}…`);
@@ -345,24 +361,22 @@ async function startRecording() {
   sink.gain.value = 0;
   workletNode.connect(sink).connect(micCtx.destination);
 
-  ws.send(JSON.stringify({ type: 'start_turn' }));
+  // Hands-free: the mic now streams continuously; Gemini's VAD detects turns.
   els.mic.classList.add('live');
-  setActivity('listen', 'Listening… tap again to send', 'live');
+  setListening();
 }
 
 async function stopRecording() {
   if (!recording) return;
   recording = false;
   els.mic.classList.remove('live');
-  setActivity('think', 'Thinking…');
-
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'end_turn' }));
   if (workletNode) { workletNode.disconnect(); workletNode = null; }
   if (micCtx) { await micCtx.close(); micCtx = null; }
   if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+  setReady();
 }
 
-// Tap to start a turn, tap again to send. (Avoids hold-drift cutting speech off.)
+// Tap once to start the conversation, tap again to mute/end it.
 function toggleRecording() {
   if (els.mic.disabled) return;
   if (recording) stopRecording(); else startRecording();
