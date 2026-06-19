@@ -7,6 +7,8 @@ behalf. Run from the repo root so the shared `modules/` package is importable:
     venv/bin/uvicorn voice_shopping.server:app --reload --port 5050
 """
 import os
+import time
+import uuid
 import asyncio
 import traceback
 from pathlib import Path
@@ -30,6 +32,7 @@ except Exception:  # pragma: no cover - websockets ships with uvicorn[standard]
 SESSION_END_ERRORS = (genai_errors.APIError, ConnectionClosed)
 
 from voice_shopping import agent
+from voice_shopping import eventlog
 
 load_dotenv()
 
@@ -138,7 +141,7 @@ def _lookup(state, rank):
         return None
 
 
-async def handle_tool_call(ws: WebSocket, session, tool_call, state):
+async def handle_tool_call(ws: WebSocket, session, tool_call, state, session_id):
     """Run each requested function and return its result to the Live session.
 
     Product cards/details are pushed to the browser separately so the UI updates
@@ -152,18 +155,26 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state):
         if fc.name == "search_products":
             stores = [agent.RETAILER_LABELS[r] for r in agent._normalize_retailers(args.get("retailers"))]
             await ws.send_json({"type": "search_running", "query": args.get("query", ""), "stores": stores})
+            t0 = time.time()
             try:
                 compact, cards = await agent.run_search(args)
             except Exception as e:
                 print(f"search_products error: {e}")
                 traceback.print_exc()
                 compact, cards = {"error": str(e)}, []
+            latency_ms = int((time.time() - t0) * 1000)
             if cards:
                 await ws.send_json({"type": "products", "query": args.get("query", ""), "cards": cards})
                 state["query"] = args.get("query", "")
                 state["results"] = {c["rank"]: c for c in cards}
             else:
                 await ws.send_json({"type": "no_products", "query": args.get("query", "")})
+            eventlog.log("search", session_id=session_id, query=args.get("query"),
+                         retailers=stores, result_count=len(cards), latency_ms=latency_ms,
+                         blocked=(len(cards) == 0),
+                         payload={"min_price": args.get("min_price"),
+                                  "max_price": args.get("max_price"),
+                                  "features": args.get("features")})
             result = compact
 
         elif fc.name == "get_product_details":
@@ -179,6 +190,9 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state):
                     summary = ""
                 if summary:
                     await ws.send_json({"type": "product_detail", "rank": card["rank"], "summary": summary})
+                eventlog.log("detail", session_id=session_id,
+                             payload={"rank": card["rank"], "title": card.get("title", "")[:120],
+                                      "store": card.get("store"), "found": bool(summary)})
                 result = {
                     "rank": card["rank"],
                     "title": card.get("title", "")[:90],
@@ -190,6 +204,8 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state):
             card = _lookup(state, args.get("rank"))
             if card:
                 await ws.send_json({"type": "highlight_product", "rank": card["rank"]})
+                eventlog.log("highlight", session_id=session_id,
+                             payload={"rank": card["rank"], "title": card.get("title", "")[:120]})
                 result = {"ok": True, "rank": card["rank"]}
             else:
                 result = {"error": "No matching product to highlight."}
@@ -232,7 +248,19 @@ async def _read_init(ws):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
+    session_id = uuid.uuid4().hex[:12]
     resume_handle, state = await _read_init(ws)
+    eventlog.log("session_start", session_id=session_id,
+                 payload={"resumed": bool(resume_handle), "restored": len(state["results"]),
+                          "user_agent": ws.headers.get("user-agent")})
+    turn = {"user": "", "agent": ""}  # accumulates the current turn's transcripts
+
+    def flush_turn():
+        u, a = turn["user"].strip(), turn["agent"].strip()
+        if u or a:
+            eventlog.log("turn", session_id=session_id, user_text=u or None, agent_text=a or None)
+        turn["user"] = turn["agent"] = ""
+
     try:
         async with get_client().aio.live.connect(model=MODEL, config=live_config(resume_handle)) as session:
             await ws.send_json({"type": "ready", "model": MODEL, "resumed": bool(resume_handle),
@@ -275,7 +303,7 @@ async def ws_endpoint(ws: WebSocket):
                             # Run the search concurrently so a slow scrape doesn't
                             # stall the receive loop (which keeps audio flowing and
                             # the session alive).
-                            t = asyncio.create_task(handle_tool_call(ws, session, response.tool_call, state))
+                            t = asyncio.create_task(handle_tool_call(ws, session, response.tool_call, state, session_id))
                             bg_tasks.add(t)
                             t.add_done_callback(bg_tasks.discard)
                         sc = response.server_content
@@ -283,14 +311,17 @@ async def ws_endpoint(ws: WebSocket):
                             await ws.send_bytes(response.data)
                         if sc:
                             if sc.input_transcription and sc.input_transcription.text:
+                                turn["user"] += sc.input_transcription.text
                                 await ws.send_json({"type": "user_transcript",
                                                     "text": sc.input_transcription.text})
                             if sc.output_transcription and sc.output_transcription.text:
+                                turn["agent"] += sc.output_transcription.text
                                 await ws.send_json({"type": "agent_transcript",
                                                     "text": sc.output_transcription.text})
                             if sc.interrupted:
                                 await ws.send_json({"type": "interrupted"})
                             if sc.turn_complete:
+                                flush_turn()  # log the completed user+agent exchange
                                 await ws.send_json({"type": "turn_complete"})
 
             tasks = [asyncio.create_task(browser_to_gemini()),
@@ -316,6 +347,8 @@ async def ws_endpoint(ws: WebSocket):
         except Exception:
             pass
     finally:
+        flush_turn()  # capture any in-progress exchange before closing
+        eventlog.log("session_end", session_id=session_id)
         try:
             await ws.close()
         except Exception:
