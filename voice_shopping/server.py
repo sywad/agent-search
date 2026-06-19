@@ -76,7 +76,11 @@ Follow-ups (important):
   of these is better for travel"), call `get_product_details` for that item (or for
   each item you're comparing) to get real specs and review highlights, then summarize.
 - When you talk about a specific item, call `highlight_product` with its rank so its
-  card is highlighted on screen for the user to tap. Refer to items by rank/store."""
+  card is highlighted on screen for the user to tap. Refer to items by rank/store.
+- To reorder, filter, or trim the cards already shown ("sort by brand", "only Nike",
+  "cheapest first", "just the top 3"), call `arrange_results` with the ranks in the
+  order to display — you decide the order from what you know about the items. This
+  reuses the current results; don't search again just to re-sort."""
 
 BASE_DIR = Path(__file__).parent
 
@@ -204,6 +208,24 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state, session_id)
                 result = {"ok": True, "rank": card["rank"]}
             else:
                 result = {"error": "No matching product to highlight."}
+
+        elif fc.name == "arrange_results":
+            results = state.get("results") or {}
+            order = []
+            for r in (args.get("order") or []):
+                try:
+                    ri = int(r)
+                except (TypeError, ValueError):
+                    continue
+                if ri in results and ri not in order:
+                    order.append(ri)
+            if not order:
+                result = {"error": "No current results to arrange — search first."}
+            else:
+                await ws.send_json({"type": "arrange", "order": order, "title": args.get("title")})
+                eventlog.log("arrange", session_id=session_id,
+                             payload={"order": order, "title": args.get("title")})
+                result = {"ok": True, "shown": len(order)}
 
         else:
             result = {"error": f"unknown function {fc.name}"}

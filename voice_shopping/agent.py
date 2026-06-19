@@ -119,8 +119,37 @@ HIGHLIGHT_PRODUCT = types.FunctionDeclaration(
 )
 
 
+ARRANGE_RESULTS = types.FunctionDeclaration(
+    name="arrange_results",
+    description=(
+        "Re-arrange the product cards already on screen by giving the ranks to show, "
+        "in the order to display them. One tool for sorting, filtering, and limiting: "
+        "include all ranks reordered to SORT (e.g. 'by brand', 'cheapest first'), "
+        "include only some ranks to FILTER (e.g. 'only Nike'), or include just the "
+        "first few to LIMIT (e.g. 'show the top 3'). Only ranks from the most recent "
+        "search are valid; this does not fetch anything new."
+    ),
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "order": types.Schema(
+                type="ARRAY",
+                items=types.Schema(type="INTEGER"),
+                description="Ranks to display, in display order. Omit a rank to hide it.",
+            ),
+            "title": types.Schema(
+                type="STRING",
+                description="Optional short heading for this view, e.g. 'Nike sneakers' or 'Sorted by brand'.",
+            ),
+        },
+        required=["order"],
+    ),
+)
+
+
 def tool() -> types.Tool:
-    return types.Tool(function_declarations=[SEARCH_PRODUCTS, GET_PRODUCT_DETAILS, HIGHLIGHT_PRODUCT])
+    return types.Tool(function_declarations=[
+        SEARCH_PRODUCTS, GET_PRODUCT_DETAILS, HIGHLIGHT_PRODUCT, ARRANGE_RESULTS])
 
 
 def _parse_price(value) -> float | None:

@@ -162,6 +162,29 @@ function showSearching(query, stores) {
   els.results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function cardEl(c) {
+  const price = c.price && c.price !== 'N/A' ? `$${escapeHtml(c.price)}` : 'Price n/a';
+  const rating = c.rating && c.rating !== 'N/A'
+    ? `<span class="rating">★ ${escapeHtml(c.rating)} <span class="muted">(${escapeHtml(c.reviews || '0')})</span></span>` : '';
+  const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.dataset.rank = c.rank;
+  card.dataset.store = c.store || 'product';
+  card.innerHTML = `
+    <div class="thumb-wrap">
+      ${c.image ? `<img class="thumb" src="${escapeHtml(c.image)}" alt="" loading="lazy">` : '<div class="thumb empty-thumb"></div>'}
+      <span class="rank">#${escapeHtml(c.rank)}</span>
+      ${store}
+    </div>
+    <div class="info">
+      <a class="title" href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.title)}</a>
+      <div class="meta"><span class="price">${price}</span>${rating}</div>
+      ${c.why ? `<div class="why">${escapeHtml(c.why)}</div>` : ''}
+    </div>`;
+  return card;
+}
+
 function renderCards(query, cards) {
   lastResults = { query, cards };
   persistResults();
@@ -169,28 +192,22 @@ function renderCards(query, cards) {
   els.results.hidden = false;
   els.resultsTitle.textContent = `${cards.length} picks for “${query}”`;
   els.cards.innerHTML = '';
-  for (const c of cards) {
-    const price = c.price && c.price !== 'N/A' ? `$${escapeHtml(c.price)}` : 'Price n/a';
-    const rating = c.rating && c.rating !== 'N/A'
-      ? `<span class="rating">★ ${escapeHtml(c.rating)} <span class="muted">(${escapeHtml(c.reviews || '0')})</span></span>` : '';
-    const store = c.store ? `<span class="store store-${escapeHtml(c.source || '')}">${escapeHtml(c.store)}</span>` : '';
-    const card = document.createElement('article');
-    card.className = 'card';
-    card.dataset.rank = c.rank;
-    card.dataset.store = c.store || 'product';
-    card.innerHTML = `
-      <div class="thumb-wrap">
-        ${c.image ? `<img class="thumb" src="${escapeHtml(c.image)}" alt="" loading="lazy">` : '<div class="thumb empty-thumb"></div>'}
-        <span class="rank">#${escapeHtml(c.rank)}</span>
-        ${store}
-      </div>
-      <div class="info">
-        <a class="title" href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.title)}</a>
-        <div class="meta"><span class="price">${price}</span>${rating}</div>
-        ${c.why ? `<div class="why">${escapeHtml(c.why)}</div>` : ''}
-      </div>`;
-    els.cards.appendChild(card);
-  }
+  for (const c of cards) els.cards.appendChild(cardEl(c));
+}
+
+// Re-render the current results in a new order/subset (sort/filter/limit) without
+// re-fetching. Cards are pulled by rank from the results we already hold.
+function arrangeCards(order, title) {
+  if (!lastResults || !lastResults.cards) return;
+  const byRank = new Map(lastResults.cards.map((c) => [c.rank, c]));
+  const arranged = order.map((r) => byRank.get(r)).filter(Boolean);
+  if (!arranged.length) return;
+  hideEmpty();
+  els.results.hidden = false;
+  if (title) els.resultsTitle.textContent = title;
+  els.cards.innerHTML = '';
+  for (const c of arranged) els.cards.appendChild(cardEl(c));
+  els.results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function cardByRank(rank) {
@@ -324,6 +341,7 @@ function connect() {
       case 'detail_running': setActivity(undefined, 'Reading product details…'); showDetailLoading(msg.rank); break;
       case 'product_detail': showDetail(msg.rank, msg.summary); break;
       case 'highlight_product': highlightCard(msg.rank); break;
+      case 'arrange': arrangeCards(msg.order, msg.title); break;
       case 'error': setActivity(undefined, `Error: ${msg.message}`, 'err'); setTimeout(setReady, 2500); break;
     }
   };
