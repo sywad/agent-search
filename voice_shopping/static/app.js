@@ -21,6 +21,7 @@ const els = {
   empty: document.getElementById('empty'),
   intro: document.getElementById('intro'),
   helpToggle: document.getElementById('help-toggle'),
+  newSession: document.getElementById('new-session'),
 };
 
 // --- Agent activity (stage rail) ----------------------------------------
@@ -382,6 +383,32 @@ els.transcriptHead.addEventListener('click', () => {
 
 // Toggle the how-to intro.
 els.helpToggle.addEventListener('click', () => { els.intro.hidden = !els.intro.hidden; });
+
+// Start a brand-new session: clear persisted context + UI and reconnect with no
+// resume handle, so Gemini starts a fresh conversation.
+function startNewSession() {
+  if (recording) stopRecording();
+  stopPlayback();
+  resumeHandle = null;
+  lastResults = null;
+  try {
+    sessionStorage.removeItem('vs_resume_handle');
+    sessionStorage.removeItem('vs_last_results');
+  } catch (e) {}
+  // Reset UI
+  els.cards.innerHTML = '';
+  els.results.hidden = true;
+  els.transcript.innerHTML = '';
+  els.transcriptLatest.textContent = 'Conversation';
+  els.transcriptWrap.classList.remove('open');
+  curUser = null; curAgent = null;
+  if (els.empty) els.empty.hidden = false;
+  // Reconnect cleanly (drop the old socket without triggering its auto-reconnect).
+  reconnectAttempts = 0;
+  if (ws) { ws.onclose = null; try { ws.close(); } catch (e) {} }
+  connect();
+}
+els.newSession.addEventListener('click', startNewSession);
 
 // Prime/unlock audio on the very first user interaction (iOS needs a gesture).
 function primeAudioOnce() { unlockAudio(); }

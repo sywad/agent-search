@@ -35,6 +35,18 @@ body {
   margin-bottom: 14px;
 }
 .topbar h1 { margin: 0; font-size: 1.25rem; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.text-btn {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.text-btn:hover { color: var(--text); border-color: var(--accent); }
 .help-toggle {
   width: 30px; height: 30px;
   border-radius: 50%;
