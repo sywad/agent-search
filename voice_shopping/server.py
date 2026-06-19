@@ -82,7 +82,10 @@ Follow-ups (important):
 - To reorder, filter, or trim the cards already shown ("sort by brand", "only Nike",
   "cheapest first", "just the top 3"), call `arrange_results` with the ranks in the
   order to display — you decide the order from what you know about the items. This
-  reuses the current results; don't search again just to re-sort."""
+  reuses the current results; don't search again just to re-sort.
+- To filter by how items LOOK ("show only the black ones", "the minimalist ones",
+  "which look most premium"), call `visual_filter` with the description — it actually
+  views the product photos. Use this instead of guessing appearance from titles."""
 
 BASE_DIR = Path(__file__).parent
 
@@ -228,6 +231,30 @@ async def handle_tool_call(ws: WebSocket, session, tool_call, state, session_id)
                 eventlog.log("arrange", session_id=session_id,
                              payload={"order": order, "title": args.get("title")})
                 result = {"ok": True, "shown": len(order)}
+
+        elif fc.name == "visual_filter":
+            cards = list((state.get("results") or {}).values())
+            criteria = (args.get("criteria") or "").strip()
+            if not cards or not criteria:
+                result = {"error": "No results to filter visually — search first."}
+            else:
+                await ws.send_json({"type": "visual_running", "criteria": criteria})
+                try:
+                    ranks = await agent.visual_filter(cards, criteria)
+                except Exception as e:
+                    print(f"visual_filter error: {e}")
+                    traceback.print_exc()
+                    ranks = []
+                eventlog.log("visual_filter", session_id=session_id,
+                             payload={"criteria": criteria, "matched": ranks})
+                if ranks:
+                    await ws.send_json({"type": "arrange", "order": ranks,
+                                        "title": f"Matching “{criteria}”"})
+                    result = {"ok": True, "matched": ranks, "count": len(ranks),
+                              "instruction": "Tell the user how many matched and mention a couple, briefly."}
+                else:
+                    result = {"matched": [], "count": 0,
+                              "instruction": "Tell the user none of the shown items clearly match that look; offer to search differently."}
 
         else:
             result = {"error": f"unknown function {fc.name}"}

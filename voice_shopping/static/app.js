@@ -349,6 +349,7 @@ function connect() {
       case 'product_detail': showDetail(msg.rank, msg.summary); break;
       case 'highlight_product': highlightCard(msg.rank); break;
       case 'arrange': arrangeCards(msg.order, msg.title); break;
+      case 'visual_running': setActivity('search', `Looking at the photos for “${msg.criteria}”…`); break;
       case 'error': setActivity(undefined, `Error: ${msg.message}`, 'err'); setTimeout(setReady, 2500); break;
     }
   };

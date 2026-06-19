@@ -9,6 +9,8 @@ conversation — e.g. the user can say "also check Walmart". The shared modules 
 synchronous (requests / thread pools), so `run_search` offloads them to a worker
 thread to keep the async server's event loop free.
 """
+import re
+import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -20,6 +22,7 @@ from modules.target_scraper import TargetScraper
 from modules.reranker import Reranker
 from modules.query_understanding import QueryPlanner
 from modules.detail_summarizer import DetailSummarizer
+from modules.llm_client import generate
 
 # Text model for ranking + query expansion (the Live model id is audio-only and
 # not valid here).
@@ -158,9 +161,31 @@ ARRANGE_RESULTS = types.FunctionDeclaration(
 )
 
 
+VISUAL_FILTER = types.FunctionDeclaration(
+    name="visual_filter",
+    description=(
+        "Filter the products currently on screen by how they LOOK, using their actual "
+        "images — color, style, shape, material, overall vibe. Use for requests like "
+        "'show only the black ones', 'the red and white pairs', 'the minimalist looking "
+        "ones', or 'which look most premium'. It views the photos and re-displays the "
+        "matches. Only works on the most recent results."
+    ),
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "criteria": types.Schema(
+                type="STRING",
+                description="The visual description to match, e.g. 'black', 'red and white', 'minimalist', 'looks rugged'.",
+            ),
+        },
+        required=["criteria"],
+    ),
+)
+
+
 def tool() -> types.Tool:
     return types.Tool(function_declarations=[
-        SEARCH_PRODUCTS, GET_PRODUCT_DETAILS, HIGHLIGHT_PRODUCT, ARRANGE_RESULTS])
+        SEARCH_PRODUCTS, GET_PRODUCT_DETAILS, HIGHLIGHT_PRODUCT, ARRANGE_RESULTS, VISUAL_FILTER])
 
 
 def _parse_price(value) -> float | None:
@@ -360,3 +385,68 @@ async def fetch_details(card: dict, query: str) -> str:
         summarizer._fetch_and_summarize, card, seed, RERANK_MODEL
     )
     return summary or ""
+
+
+VISUAL_FILTER_SYS = (
+    "You are a visual product filter. You see product images, each labeled by its rank "
+    "number, plus a user's visual criteria. Decide which products' IMAGES match the look "
+    "the user described. Return ONLY a JSON array of the matching rank numbers, best match "
+    "first, e.g. [3,1,5]. Return [] if none match. No other text."
+)
+
+
+def _visual_filter_sync(cards: list, criteria: str) -> list:
+    """Download the cards' images and ask a vision model which match `criteria`.
+    Returns matching ranks (subset of the input), best-first."""
+    # Reuse the reranker's parallel image downloader (reads each card's 'image').
+    ordered = sorted(cards, key=lambda c: c.get("rank", 0))
+    images = Reranker()._download_images(ordered)
+
+    content_parts = []
+    available = []
+    for card, img in zip(ordered, images):
+        if img is None:
+            continue
+        content_parts.append({"type": "text", "text": f"Rank {card['rank']}: {card.get('title', '')[:60]}"})
+        content_parts.append({"type": "image", "data": img["data"], "mime_type": img["mime_type"]})
+        available.append(card["rank"])
+
+    if not content_parts:
+        return []
+
+    prompt = (
+        f'User\'s visual criteria: "{criteria}".\n'
+        f"Looking ONLY at the product images above (each labeled 'Rank N'), return the ranks "
+        f"whose image matches that look, best match first. Available ranks: {available}.\n"
+        f"Return ONLY a JSON array of rank numbers (e.g. [3,1,5]); [] if none match."
+    )
+    content_parts.append({"type": "text", "text": prompt})
+
+    text, _ = generate(RERANK_MODEL, prompt, VISUAL_FILTER_SYS, temperature=0, content_parts=content_parts)
+
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("```")[1]
+        if t.startswith("json"):
+            t = t[4:]
+        t = t.strip()
+    try:
+        raw = json.loads(t)
+    except Exception:
+        raw = re.findall(r"\d+", t)
+
+    valid_set = set(available)
+    out = []
+    for r in raw:
+        try:
+            ri = int(r)
+        except (TypeError, ValueError):
+            continue
+        if ri in valid_set and ri not in out:
+            out.append(ri)
+    return out
+
+
+async def visual_filter(cards: list, criteria: str) -> list:
+    """Return the ranks of products whose image matches the visual `criteria`."""
+    return await asyncio.to_thread(_visual_filter_sync, cards, criteria)
