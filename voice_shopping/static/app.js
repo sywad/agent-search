@@ -64,8 +64,16 @@ let lastResults = JSON.parse(sessionStorage.getItem('vs_last_results') || 'null'
 
 function setResumeHandle(h) {
   resumeHandle = h;
-  try { sessionStorage.setItem('vs_resume_handle', h); } catch (e) {}
+  try {
+    if (h) sessionStorage.setItem('vs_resume_handle', h);
+    else sessionStorage.removeItem('vs_resume_handle');
+  } catch (e) {}
 }
+
+// Track each connection so we can detect a resume handle that died on arrival.
+let connectedAt = 0;
+let sentHandle = null;
+let gotHandleThisSession = false;
 function persistResults() {
   try { sessionStorage.setItem('vs_last_results', JSON.stringify(lastResults)); } catch (e) {}
 }
@@ -299,7 +307,9 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    reconnectAttempts = 0;
+    connectedAt = Date.now();
+    sentHandle = resumeHandle;
+    gotHandleThisSession = false;
     setActivity('', 'Connecting…');
     // First message: hand back our resume handle + last results so the session and
     // server state can be restored.
@@ -308,9 +318,19 @@ function connect() {
   ws.onclose = () => {
     els.mic.disabled = true;
     els.mic.classList.remove('live', 'speaking');
-    const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000); // backoff, cap 10s
+    const alive = Date.now() - connectedAt;
+    // A resume that died on arrival (we replayed a handle, the session never produced
+    // a new one, and it closed almost immediately) means the handle is stale — drop it
+    // so we don't loop replaying a dead handle forever.
+    if (sentHandle && !gotHandleThisSession && alive < 4000) {
+      setResumeHandle(null);
+      console.warn('Stale resume handle cleared after fast disconnect');
+    }
+    // Only a connection that actually lived resets the backoff; fast-closing loops back off.
+    if (alive > 3000) reconnectAttempts = 0;
+    const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
     reconnectAttempts++;
-    setActivity('', `Disconnected — reconnecting in ${Math.round(delay / 1000)}s…`, 'err');
+    setActivity('', 'Reconnecting…', 'err');
     setTimeout(connect, delay);
   };
   ws.onerror = () => {};
@@ -320,7 +340,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'ready': recording ? setListening() : setReady(); break;
-      case 'resume_handle': setResumeHandle(msg.handle); break;
+      case 'resume_handle': gotHandleThisSession = true; setResumeHandle(msg.handle); break;
       case 'user_transcript':
         if (recording && !msg.text.trim()) break;
         speaking = false;
